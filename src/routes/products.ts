@@ -37,8 +37,8 @@ productsRoute.get("/", async (c) => {
   };
 
   // -------- Query params de alto nivel ----------
-  const page = Math.max(1, numOr(c.req.query("page"), 1));
-  const size = Math.min(5000, Math.max(1, numOr(c.req.query("size"), 5000)));
+  const page = (c.req.query("page"), 1);
+  const size = (c.req.query("size"), 5000);
 
   // Búsqueda flexible (alias buscar/q)
   const buscar = c.req.query("buscar") || "";
@@ -276,7 +276,7 @@ productsRoute.get("/", async (c) => {
 
 // --- SUGERENCIAS (~10) BASADAS EN UN PRODUCTO ---
 // GET /products/:codigo/suggest?limit=10&stock=public|agotado|all&bodegas=01,06&stands=3H,2B
-/* productsRoute.get("/:codigo/suggest", async (c) => {
+productsRoute.get("/:codigo/suggest", async (c) => {
   await connectDB();
 
   const codigo = c.req.param("codigo");
@@ -321,7 +321,7 @@ productsRoute.get("/", async (c) => {
   const baseFab = base.Fabricante ?? null;
 
   // Precio base para proximidad (usa PVP, o Precio si no hay)
-  const basePrice = Number(base?.PVP ?? base?.Precio ?? base?.Pvp ?? 0) || 0;
+  const basePrice = Number(base?.Precio ?? 0) || 0;
 
   // 3) Pipeline de candidatos
   const pipeline: any[] = [];
@@ -475,7 +475,7 @@ productsRoute.get("/:codigo", async (c) => {
 });
 
 // --- UPSERT MASIVO DE PRODUCTOS ---
-productsRoute.post("/upsert", async (c) => {
+/* productsRoute.post("/upsert", async (c) => {
   await connectDB();
 
   let body: any;
