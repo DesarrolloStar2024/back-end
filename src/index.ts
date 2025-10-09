@@ -19,8 +19,8 @@ app.use(
   "*",
   cors({
     origin: (origin) => {
-      if (origin === "https://importadorastar.com") return origin;
-      if (origin === "http://localhost:3000") return origin;
+      if (origin === "https://beta.starprofessional.com.co/") return origin;
+      if (origin === "http://localhost:5173") return origin;
       return null;
     },
   })
