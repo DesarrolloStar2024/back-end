@@ -9,17 +9,15 @@ export interface ISuperAdmin extends Document {
 
 const SuperAdminSchema = new Schema<ISuperAdmin>(
   {
-    Id: { type: String, required: true, unique: true, trim: true },
+    Id: { type: String, required: true, unique: true, trim: true }, // índice ya creado
     Codigo: { type: String, required: true, trim: true },
   },
   { timestamps: true }
 );
 
-// Índices
-SuperAdminSchema.index({ Id: 1 }, { unique: true });
+// Índices adicionales
 SuperAdminSchema.index({ Codigo: 1 });
 
-export const SuperAdmin = mongoose.model<ISuperAdmin>(
-  "SuperAdmin",
-  SuperAdminSchema
-);
+export const SuperAdmin =
+  mongoose.models.SuperAdmin ||
+  mongoose.model<ISuperAdmin>("SuperAdmin", SuperAdminSchema);

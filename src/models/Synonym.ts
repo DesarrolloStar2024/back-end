@@ -1,4 +1,3 @@
-// models/Synonym.ts
 import mongoose, { Schema, Document } from "mongoose";
 
 export interface ISynonym extends Document {
@@ -7,10 +6,11 @@ export interface ISynonym extends Document {
 }
 
 const SynonymSchema = new Schema<ISynonym>({
-  term: { type: String, required: true, unique: true },
+  term: { type: String, required: true, unique: true }, // ya crea el índice único
   synonyms: { type: [String], default: [] },
 });
 
-SynonymSchema.index({ term: 1 });
+// ❌ Eliminamos el índice duplicado (ya lo genera `unique: true`)
 
-export const Synonym = mongoose.model<ISynonym>("Synonym", SynonymSchema);
+export const Synonym =
+  mongoose.models.Synonym || mongoose.model<ISynonym>("Synonym", SynonymSchema);

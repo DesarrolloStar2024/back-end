@@ -49,7 +49,7 @@ export interface IProduct extends Document {
   Reg: number;
 
   // NUEVOS FLAGS
-  PromoCatalogo?: boolean;
+  PromoCatalogo?: { activo: boolean; promo: string };
   RefCatalogo?: boolean;
 }
 
@@ -106,7 +106,10 @@ const ProductSchema = new Schema<IProduct>(
     Reg: Number,
 
     // NUEVOS
-    PromoCatalogo: { type: Boolean, default: false },
+    PromoCatalogo: {
+      activo: { type: Boolean, default: false },
+      promo: { type: String, default: "" },
+    },
     RefCatalogo: { type: Boolean, default: false },
   },
   { timestamps: true }
@@ -126,4 +129,5 @@ ProductSchema.index(
   }
 );
 
-export const Product = mongoose.model<IProduct>("Product", ProductSchema);
+export const Product =
+  mongoose.models.Product || mongoose.model("Product", ProductSchema);

@@ -2,7 +2,7 @@
 import { Hono } from "hono";
 import { Product } from "../models/Product.js";
 import { Synonym } from "../models/Synonym.js";
-import { connectDB } from "../config/db.js";
+import { connectDB } from "../config/index.js";
 import {
   ES_COLLATION,
   toTokens,
@@ -11,6 +11,7 @@ import {
   expandWithSynonyms,
   buildOrRegex,
 } from "../utils/search.js";
+import { authMiddleware } from "../middleware/auth.js";
 
 export const productsRoute = new Hono();
 
@@ -37,8 +38,15 @@ productsRoute.get("/", async (c) => {
   };
 
   // -------- Query params de alto nivel ----------
-  const page = (c.req.query("page"), 1);
-  const size = (c.req.query("size"), 5000);
+  // -------- Query params de alto nivel ----------
+  const rawPage = c.req.query("page");
+  const rawSize = c.req.query("size");
+
+  // page >= 1 (entero)
+  const page = Math.max(1, Math.floor(numOr(rawPage, 1)!));
+
+  // size entre 1 y 2000 (entero)
+  const size = Math.max(1, Math.min(2000, Math.floor(numOr(rawSize, 50)!)));
 
   // Búsqueda flexible (alias buscar/q)
   const buscar = c.req.query("buscar") || "";
@@ -139,8 +147,45 @@ productsRoute.get("/", async (c) => {
   if (masve) baseAnd.push({ Masve: masve });
   if (nuevo) baseAnd.push({ Nuevo: nuevo });
   if (promo) baseAnd.push({ Promo: promo });
-
-  if (hasPromoCatalogo) baseAnd.push({ PromoCatalogo: promoCatalogoBool });
+  if (hasPromoCatalogo) {
+    const promoValue = c.req.query("promo");
+    if (typeof promoCatalogoBool === "boolean") {
+      if (promoCatalogoBool) {
+        // Solo los que tienen activo en true
+        if (promoValue) {
+          baseAnd.push({
+            "PromoCatalogo.activo": true,
+            "PromoCatalogo.promo": String(promoValue),
+          });
+        } else {
+          baseAnd.push({ "PromoCatalogo.activo": true });
+        }
+      } else {
+        // Los que no tienen activo o está en false
+        if (promoValue) {
+          baseAnd.push({
+            $or: [
+              {
+                "PromoCatalogo.activo": false,
+                "PromoCatalogo.promo": String(promoValue),
+              },
+              {
+                PromoCatalogo: { $in: [null, false] },
+                "PromoCatalogo.promo": String(promoValue),
+              },
+            ],
+          });
+        } else {
+          baseAnd.push({
+            $or: [
+              { "PromoCatalogo.activo": false },
+              { PromoCatalogo: { $in: [null, false] } },
+            ],
+          });
+        }
+      }
+    }
+  }
   if (hasRefCatalogo) baseAnd.push({ RefCatalogo: refCatalogoBool });
 
   if (descripcion)
@@ -475,7 +520,7 @@ productsRoute.get("/:codigo", async (c) => {
 });
 
 // --- UPSERT MASIVO DE PRODUCTOS ---
-/* productsRoute.post("/upsert", async (c) => {
+productsRoute.post("/upsert", async (c) => {
   await connectDB();
 
   let body: any;
@@ -551,4 +596,294 @@ productsRoute.get("/:codigo", async (c) => {
     upserted,
     errors,
   });
-});*/
+});
+
+// --- Helpers ---
+const toBoolish = (v: any) =>
+  typeof v === "boolean"
+    ? v
+    : ["true", "1", "s", "si", "sí", "y", "yes"].includes(
+        String(v).toLowerCase()
+      );
+
+function parseCodesList(input: any): string[] {
+  if (Array.isArray(input)) {
+    return input.map((x) => String(x).trim()).filter(Boolean);
+  }
+  if (typeof input === "string") {
+    // CSV / líneas / tabs / ;
+    return input
+      .split(/[\n,;\t]+/g)
+      .map((x) => x.trim())
+      .filter(Boolean);
+  }
+  return [];
+}
+
+type PromoRow = {
+  codigo?: string;
+  code?: string;
+  promo?: string;
+  activo?: boolean | string;
+};
+
+function parsePromoItems(
+  body: any
+): Array<{ Codigo: string; promo: string; activo: boolean }> {
+  const out: Array<{ Codigo: string; promo: string; activo: boolean }> = [];
+
+  if (Array.isArray(body?.items)) {
+    for (const r of body.items as PromoRow[]) {
+      const Codigo = String(r.codigo ?? r.code ?? "").trim();
+      const promo = String(r.promo ?? "").trim();
+      const activo = toBoolish(r.activo ?? true);
+      if (Codigo && promo) out.push({ Codigo, promo, activo });
+    }
+  } else if (typeof body?.text === "string") {
+    // cada línea: CODIGO, PROMO [, ACTIVO]
+    const lines = body.text
+      .split(/\r?\n/)
+      .map((l: string) => l.trim())
+      .filter(Boolean);
+    for (const line of lines) {
+      const [c, p, a] = line.split(/[,\t;]+/);
+      const Codigo = String(c ?? "").trim();
+      const promo = String(p ?? "").trim();
+      const activo = toBoolish(a ?? true);
+      if (Codigo && promo) out.push({ Codigo, promo, activo });
+    }
+  }
+  return out;
+}
+
+// Actualiza RefCatalogo de un producto por Codigo
+// Body: { "value": true | false }
+productsRoute.patch(
+  "/:codigo/ref-catalogo",
+  authMiddleware(true),
+  async (c) => {
+    await connectDB();
+    const codigo = c.req.param("codigo");
+
+    let body: any;
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: "JSON inválido" }, 400);
+    }
+    if (body?.value === undefined)
+      return c.json({ error: "Falta 'value' (boolean)" }, 400);
+
+    const value = toBoolish(body.value);
+    const res = await Product.updateOne(
+      { Codigo: codigo },
+      { $set: { RefCatalogo: value } }
+    );
+
+    return c.json({
+      ok: true,
+      codigo,
+      value,
+      matched: res.matchedCount ?? 0,
+      modified: res.modifiedCount ?? 0,
+    });
+  }
+);
+
+// Actualiza RefCatalogo en lote por Codigos
+// Body: { "codes": ["314BP","001"] | "314BP,001\nXYZ", "value": true | false }
+productsRoute.post("/ref-catalogo/bulk", authMiddleware(true), async (c) => {
+  await connectDB();
+
+  let body: any;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "JSON inválido" }, 400);
+  }
+
+  const codes = parseCodesList(body?.codes);
+  if (!codes.length) return c.json({ error: "Debe enviar 'codes'." }, 400);
+  if (body?.value === undefined)
+    return c.json({ error: "Falta 'value' (boolean)" }, 400);
+
+  const value = toBoolish(body.value);
+  const res = await Product.updateMany(
+    { Codigo: { $in: codes } },
+    { $set: { RefCatalogo: value } }
+  );
+
+  return c.json({
+    ok: true,
+    requested: codes.length,
+    value,
+    matched: res.matchedCount ?? 0,
+    modified: res.modifiedCount ?? 0,
+  });
+});
+
+// PATCH /products/:codigo/promo-catalogo
+productsRoute.patch(
+  "/:codigo/promo-catalogo",
+  authMiddleware(true),
+  async (c) => {
+    await connectDB();
+    const codigo = c.req.param("codigo");
+    console.log("PATCH /products/:codigo/promo-catalogo", codigo);
+
+    let body: any;
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: "JSON inválido" }, 400);
+    }
+
+    const hasActivo = body?.activo !== undefined;
+    const hasPromo = typeof body?.promo === "string";
+
+    if (!hasActivo && !hasPromo) {
+      return c.json(
+        { error: "No hay campos válidos (use 'activo' y/o 'promo')." },
+        400
+      );
+    }
+
+    // Traer el actual para mergear si es objeto
+    const doc = await Product.findOne(
+      { Codigo: codigo },
+      { PromoCatalogo: 1 }
+    ).lean();
+
+    // Normalizar base
+    let base: any = { activo: false, promo: "" };
+    if (
+      doc &&
+      doc.PromoCatalogo &&
+      typeof doc.PromoCatalogo === "object" &&
+      !Array.isArray(doc.PromoCatalogo)
+    ) {
+      base = {
+        activo: !!doc.PromoCatalogo.activo,
+        promo: String(doc.PromoCatalogo.promo || ""),
+      };
+    }
+
+    // Aplicar cambios
+    const nuevo = {
+      activo: hasActivo ? !!body.activo : base.activo,
+      promo: hasPromo ? String(body.promo) : base.promo,
+    };
+
+    // Escribir el objeto completo (evita el error de subcampo sobre boolean)
+    const res = await Product.updateOne(
+      { Codigo: codigo },
+      { $set: { PromoCatalogo: nuevo } }
+    );
+
+    return c.json({
+      ok: true,
+      codigo,
+      set: { PromoCatalogo: nuevo },
+      matched: (res as any).matchedCount ?? 0,
+      modified: (res as any).modifiedCount ?? 0,
+    });
+  }
+);
+
+// POST /products/promo-catalogo/bulk
+productsRoute.post("/promo-catalogo/bulk", authMiddleware(true), async (c) => {
+  await connectDB();
+
+  let body: any;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "JSON inválido" }, 400);
+  }
+
+  const items = parsePromoItems(body);
+  if (!items.length) {
+    return c.json(
+      { error: "Debe enviar 'items' o 'text' con código y promo." },
+      400
+    );
+  }
+
+  const ops = items.map((it) => ({
+    updateOne: {
+      filter: { Codigo: it.Codigo },
+      update: {
+        // reemplaza completamente el campo (si era boolean, ahora queda objeto)
+        $set: {
+          PromoCatalogo: {
+            activo: !!it.activo,
+            promo: String(it.promo || ""),
+          },
+        },
+      },
+      upsert: false,
+    },
+  }));
+
+  const res = await Product.bulkWrite(ops, { ordered: false });
+
+  return c.json({
+    ok: true,
+    requested: items.length,
+    matched: (res as any).matchedCount ?? 0,
+    modified: (res as any).modifiedCount ?? 0,
+  });
+});
+
+productsRoute.get("/catalogo/:codFami", async (c) => {
+  try {
+    const codFami = c.req.param("codFami");
+    const onlyAvailable = c.req.query("onlyAvailable") === "true";
+
+    if (!codFami) {
+      return c.json({ ok: false, error: "Falta parámetro codFami" }, 400);
+    }
+
+    // 🔹 Buscar productos de la familia
+    let products = await Product.find({ CodFami: codFami })
+      .sort({ Descripcion: 1 })
+      .lean();
+
+    // 🔹 Si se pide solo los disponibles, filtramos por existencias > 0
+    if (onlyAvailable) {
+      interface Existencia {
+        Bodega?: string;
+        Stand?: string;
+        Existencia?: number | string | null;
+      }
+
+      interface ProductDoc {
+        Existencias?: Existencia[];
+        RefCatalogo?: boolean;
+        [key: string]: any;
+      }
+
+      products = products.filter((p: ProductDoc) =>
+        (p.Existencias as Existencia[] | undefined)?.some(
+          (e: Existencia) => Number(e.Existencia ?? 0) > 0
+        )
+      );
+    }
+
+    // 🔹 Separar según RefCatalogo
+    const dataRef = products.filter((p) => p.RefCatalogo === true);
+    const finalData = products.filter((p) => !p.RefCatalogo);
+
+    return c.json({
+      ok: true,
+      codFami,
+      total: products.length,
+      finalData,
+      dataRef,
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error("❌ Error en /products/catalogo:", msg);
+    return c.json({ ok: false, error: msg }, 500);
+  }
+});

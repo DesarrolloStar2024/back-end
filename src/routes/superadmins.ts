@@ -1,7 +1,8 @@
 import { Hono } from "hono";
-import { connectDB } from "../config/db.js";
+import { connectDB } from "../config/index.js";
 import { ES_COLLATION } from "../utils/search.js";
 import { SuperAdmin } from "../models/SuperAdmin.js";
+import { authMiddleware } from "../middleware/auth.js";
 
 export const superAdminsRoute = new Hono();
 
@@ -51,7 +52,7 @@ superAdminsRoute.get("/", async (c) => {
 });
 
 // GET /api/superadmins/:id
-superAdminsRoute.get("/:id", async (c) => {
+superAdminsRoute.get("/:id", authMiddleware(true), async (c) => {
   await connectDB();
   const id = c.req.param("id");
   const doc = await SuperAdmin.findOne({ Id: id }).lean();
@@ -60,7 +61,7 @@ superAdminsRoute.get("/:id", async (c) => {
 });
 
 // POST /api/superadmins
-superAdminsRoute.post("/", async (c) => {
+superAdminsRoute.post("/", authMiddleware(true), async (c) => {
   await connectDB();
   const body = await c.req.json();
   if (!body?.Id || !body?.Codigo)
@@ -73,7 +74,7 @@ superAdminsRoute.post("/", async (c) => {
 });
 
 // PUT /api/superadmins/:id
-superAdminsRoute.put("/:id", async (c) => {
+superAdminsRoute.put("/:id", authMiddleware(true), async (c) => {
   await connectDB();
   const id = c.req.param("id");
   const body = await c.req.json();
@@ -85,7 +86,7 @@ superAdminsRoute.put("/:id", async (c) => {
 });
 
 // DELETE /api/superadmins/:id
-superAdminsRoute.delete("/:id", async (c) => {
+superAdminsRoute.delete("/:id", authMiddleware(true), async (c) => {
   await connectDB();
   const id = c.req.param("id");
   const r = await SuperAdmin.deleteOne({ Id: id });

@@ -1,7 +1,8 @@
 import { Hono } from "hono";
-import { connectDB } from "../config/db.js";
+import { connectDB } from "../config/index.js";
 import { Synonym } from "../models/Synonym.js";
 import { ES_COLLATION } from "../utils/search.js";
+import { authMiddleware } from "../middleware/auth.js";
 
 export const synonymsRoute = new Hono();
 
@@ -52,7 +53,7 @@ synonymsRoute.get("/:term", async (c) => {
 
 // POST /api/synonyms -> crear uno
 // body: { term: "plancha", synonyms: ["pinza para cabello","alisadora"] }
-synonymsRoute.post("/", async (c) => {
+synonymsRoute.post("/", authMiddleware(true), async (c) => {
   await connectDB();
   const b = await c.req.json();
   const term = String(b.term || "")
@@ -67,7 +68,7 @@ synonymsRoute.post("/", async (c) => {
 });
 
 // PUT /api/synonyms/:term -> reemplaza synonyms
-synonymsRoute.put("/:term", async (c) => {
+synonymsRoute.put("/:term", authMiddleware(true), async (c) => {
   await connectDB();
   const term = String(c.req.param("term")).toLowerCase().trim();
   const b = await c.req.json();
@@ -81,7 +82,7 @@ synonymsRoute.put("/:term", async (c) => {
 
 // PATCH /api/synonyms/:term -> agrega/elimina
 // body: { add: ["..."], remove: ["..."] }
-synonymsRoute.patch("/:term", async (c) => {
+synonymsRoute.patch("/:term", authMiddleware(true), async (c) => {
   await connectDB();
   const term = String(c.req.param("term")).toLowerCase().trim();
   const b = await c.req.json();
@@ -104,7 +105,7 @@ synonymsRoute.patch("/:term", async (c) => {
 });
 
 // DELETE /api/synonyms/:term
-synonymsRoute.delete("/:term", async (c) => {
+synonymsRoute.delete("/:term", authMiddleware(true), async (c) => {
   await connectDB();
   const term = String(c.req.param("term")).toLowerCase().trim();
   const r = await Synonym.deleteOne({ term });

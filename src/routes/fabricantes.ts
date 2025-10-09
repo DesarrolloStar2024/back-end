@@ -1,12 +1,13 @@
 import { Hono } from "hono";
-import { connectDB } from "../config/db.js";
 import { Fabricante } from "../models/Fabricante.js";
 import { ES_COLLATION } from "../utils/search.js";
+import { connectDB } from "../config/index.js";
+import { authMiddleware } from "../middleware/auth.js";
 
 export const fabricantesRoute = new Hono();
 
 // GET /api/fabricantes -> listado con paginado, q (nombre o Id), ids=csv
-fabricantesRoute.get("/", async (c) => {
+fabricantesRoute.get("/", authMiddleware(true), async (c) => {
   await connectDB();
   const q = (c.req.query("q") || "").trim();
   const idsCsv = (c.req.query("ids") || "").trim(); // ids=F001,F002
@@ -51,7 +52,7 @@ fabricantesRoute.get("/", async (c) => {
 });
 
 // GET /api/fabricantes/:id -> por Id
-fabricantesRoute.get("/:id", async (c) => {
+fabricantesRoute.get("/:id", authMiddleware(true), async (c) => {
   await connectDB();
   const id = c.req.param("id");
   const doc = await Fabricante.findOne({ Id: id }).lean();
@@ -60,7 +61,7 @@ fabricantesRoute.get("/:id", async (c) => {
 });
 
 // POST /api/fabricantes -> crear uno
-fabricantesRoute.post("/", async (c) => {
+fabricantesRoute.post("/", authMiddleware(true), async (c) => {
   await connectDB();
   const body = await c.req.json();
   if (!body?.Id || !body?.Nombre)
@@ -73,7 +74,7 @@ fabricantesRoute.post("/", async (c) => {
 });
 
 // PUT /api/fabricantes/:id -> actualizar por Id
-fabricantesRoute.put("/:id", async (c) => {
+fabricantesRoute.put("/:id", authMiddleware(true), async (c) => {
   await connectDB();
   const id = c.req.param("id");
   const body = await c.req.json();
@@ -85,7 +86,7 @@ fabricantesRoute.put("/:id", async (c) => {
 });
 
 // DELETE /api/fabricantes/:id
-fabricantesRoute.delete("/:id", async (c) => {
+fabricantesRoute.delete("/:id", authMiddleware(true), async (c) => {
   await connectDB();
   const id = c.req.param("id");
   const r = await Fabricante.deleteOne({ Id: id });
@@ -94,7 +95,7 @@ fabricantesRoute.delete("/:id", async (c) => {
 });
 
 // POST /api/fabricantes/upsert (bulk)
-fabricantesRoute.post("/upsert", async (c) => {
+fabricantesRoute.post("/upsert", authMiddleware(true), async (c) => {
   await connectDB();
   const arr = await c.req.json();
   if (!Array.isArray(arr) || !arr.length)
