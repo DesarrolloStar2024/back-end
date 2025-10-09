@@ -19,9 +19,13 @@ app.use(
   "*",
   cors({
     origin: (origin) => {
-      if (origin === "https://beta.starprofessional.com.co/") return origin;
-      if (origin === "http://localhost:5173") return origin;
-      return null;
+      const allowed = [
+        "https://beta.starprofessional.com.co",
+        "http://localhost:5173",
+      ];
+
+      if (!origin) return "*"; // para requests directas desde navegador
+      return allowed.includes(origin) ? origin : null;
     },
   })
 );
