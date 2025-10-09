@@ -1,5 +1,6 @@
 // src/index.ts
 import { Hono } from "hono";
+import "dotenv/config";
 import { serve } from "@hono/node-server";
 import { cors } from "hono/cors";
 import { productsRoute } from "./routes/products.js";
