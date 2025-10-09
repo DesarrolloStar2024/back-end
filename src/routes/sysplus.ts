@@ -69,10 +69,20 @@ sysplusRoute.post("/cotizacion/log", async (c) => {
         }
 
         // Buscar bodegas en orden de prioridad
-        const bodega01 = product.Existencias.find((e) => e.Bodega === "01");
-        const bodega06 = product.Existencias.find((e) => e.Bodega === "06");
-        const bodegaAlt = product.Existencias.find(
-          (e) => e.Bodega !== "01" && e.Bodega !== "06"
+        interface Existencia {
+          Bodega: string;
+          Existencia: number;
+        }
+
+        const bodega01: Existencia | undefined = product.Existencias.find(
+          (e: Existencia) => e.Bodega === "01"
+        );
+        const bodega06: Existencia | undefined = product.Existencias.find(
+          (e: Existencia) => e.Bodega === "06"
+        );
+        interface BodegaAlt extends Existencia {}
+        const bodegaAlt: BodegaAlt | undefined = product.Existencias.find(
+          (e: Existencia) => e.Bodega !== "01" && e.Bodega !== "06"
         );
 
         let target = bodega01 || bodega06 || bodegaAlt;
