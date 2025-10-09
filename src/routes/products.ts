@@ -348,7 +348,10 @@ productsRoute.get("/:codigo/suggest", async (c) => {
   // 2) Preparar señales para "parecido"
   //    - tokens de la descripción (con sinónimos)
   //    - datos de jerarquía / marca / fabricante / precio
-  const baseDesc = String(base.Descripcion || "");
+  const baseDesc =
+    base && typeof base === "object" && !Array.isArray(base)
+      ? String((base as any).Descripcion || "")
+      : "";
   const baseTokens = toTokens(baseDesc);
   const expanded = await expandWithSynonyms(baseTokens, Synonym);
   const searchTerms = expanded.length ? expanded : baseTokens;
@@ -359,14 +362,16 @@ productsRoute.get("/:codigo/suggest", async (c) => {
     searchTerms
   );
 
-  const baseFami = base.CodFami ?? null;
-  const baseGrupo = base.CodGrupo ?? null;
-  const baseSub = base.CodSubgrupo ?? null;
-  const baseMarca = base.Marca ?? null;
-  const baseFab = base.Fabricante ?? null;
+  const baseFami = !Array.isArray(base) ? base.CodFami ?? null : null;
+  const baseGrupo = !Array.isArray(base) ? base.CodGrupo ?? null : null;
+  const baseSub = !Array.isArray(base) ? base.CodSubgrupo ?? null : null;
+  const baseMarca = !Array.isArray(base) ? base.Marca ?? null : null;
+  const baseFab = !Array.isArray(base) ? base.Fabricante ?? null : null;
 
   // Precio base para proximidad (usa PVP, o Precio si no hay)
-  const basePrice = Number(base?.Precio ?? 0) || 0;
+  const basePrice = base && typeof base === "object" && !Array.isArray(base)
+    ? Number((base as any).Precio ?? 0) || 0
+    : 0;
 
   // 3) Pipeline de candidatos
   const pipeline: any[] = [];
@@ -495,16 +500,18 @@ productsRoute.get("/:codigo/suggest", async (c) => {
   const suggestions = await Product.aggregate(pipeline).collation(ES);
 
   return c.json({
-    base: {
-      Codigo: base.Codigo,
-      Descripcion: base.Descripcion,
-      CodFami: baseFami,
-      CodGrupo: baseGrupo,
-      CodSubgrupo: baseSub,
-      Marca: baseMarca,
-      Fabricante: baseFab,
-      Precio: basePrice,
-    },
+    base: !Array.isArray(base)
+      ? {
+          Codigo: base.Codigo,
+          Descripcion: base.Descripcion,
+          CodFami: baseFami,
+          CodGrupo: baseGrupo,
+          CodSubgrupo: baseSub,
+          Marca: baseMarca,
+          Fabricante: baseFab,
+          Precio: basePrice,
+        }
+      : null,
     total: suggestions.length,
     data: suggestions,
   });
@@ -758,6 +765,7 @@ productsRoute.patch(
     let base: any = { activo: false, promo: "" };
     if (
       doc &&
+      !Array.isArray(doc) &&
       doc.PromoCatalogo &&
       typeof doc.PromoCatalogo === "object" &&
       !Array.isArray(doc.PromoCatalogo)
