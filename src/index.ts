@@ -13,7 +13,17 @@ import { sysplusRoute } from "./routes/sysplus.js";
 
 const app = new Hono();
 
-app.use("*", cors());
+app.use(
+  "*",
+  cors({
+    origin: (origin) => {
+      if (origin === "https://importadorastar.com") {
+        return origin;
+      }
+      return null;
+    },
+  })
+);
 app.use("*", async (_c, next) => {
   await connectDB();
   return next();
