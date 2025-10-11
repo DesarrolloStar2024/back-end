@@ -51,6 +51,7 @@ productsRoute.get("/", async (c) => {
   // Búsqueda flexible (alias buscar/q)
   const buscar = c.req.query("buscar") || "";
   const q = (c.req.query("q") || buscar || "").trim();
+  const title = c.req.query("title") || "";
 
   // Jerarquía (A21 / A-2-1 o separados)
   const descripcion = c.req.query("descripcion");
@@ -97,6 +98,16 @@ productsRoute.get("/", async (c) => {
 
   // --------- Construir $match base (campos directos) ----------
   const baseAnd: any[] = [];
+
+  if (title) {
+    // Busca por Descripcion (regex) o Código (exacto)
+    baseAnd.push({
+      $or: [
+        { Descripcion: { $regex: new RegExp(title, "i") } },
+        { Codigo: title },
+      ],
+    });
+  }
 
   // Cadena A-2-1 / A21
   // Aplica los filtros SOLO si todos los valores están presentes
@@ -192,14 +203,73 @@ productsRoute.get("/", async (c) => {
     baseAnd.push({ Descripcion: { $regex: new RegExp(descripcion, "i") } });
 
   // Búsqueda flexible con sinónimos + exact match en Codigo/Barras
+  // Búsqueda flexible con decodificación, acentos y tolerancia a tecleo
   if (q) {
-    const tokens = toTokens(q);
-    const expanded = await expandWithSynonyms(tokens, Synonym);
-    const orRegex = buildOrRegex(
-      ["Descripcion", "NomMarca", "Nomfabricante", "Codigo", "Barras"],
-      expanded.length ? expanded : tokens
-    );
-    baseAnd.push({ $or: [{ Codigo: q }, { Barras: q }, ...orRegex.$or] });
+    // 1) Decodifica y limpia
+    const decodeQuerySafe = (v: string) => {
+      let s = String(v ?? "").replace(/\+/g, "%20");
+      for (let i = 0; i < 2; i++) {
+        // maneja doble-encode sin romper
+        try {
+          const d = decodeURIComponent(s);
+          if (d === s) break;
+          s = d;
+        } catch {
+          break;
+        }
+      }
+      return s;
+    };
+    const stripRepeats = (s: string) => s.replace(/(.)\1{2,}/g, "$1$1"); // pañosss -> pañoss
+    const base = stripRepeats(decodeQuerySafe(q)).trim();
+
+    if (base) {
+      // 2) Helpers para acentos (regex acento-insensible) y tokens
+      const toBase = (s: string) =>
+        s
+          .normalize("NFD")
+          .replace(/\p{Diacritic}/gu, "")
+          .toLowerCase(); // requiere Node 16+
+      const escapeRx = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const accentTokenRx = (t: string) => {
+        const b = toBase(t);
+        const map: Record<string, string> = {
+          a: "[aáàäâAÁÀÄÂ]",
+          e: "[eéèëêEÉÈËÊ]",
+          i: "[iíìïîIÍÌÏÎ]",
+          o: "[oóòöôOÓÒÖÔ]",
+          u: "[uúùüûUÚÙÜÛ]",
+          n: "[nñNÑ]",
+        };
+        const pattern = [...b].map((ch) => map[ch] ?? escapeRx(ch)).join("");
+        return new RegExp(pattern, "i");
+      };
+
+      const tokens = toTokens(base);
+      const expanded = await expandWithSynonyms(tokens, Synonym);
+      const useTokens = expanded.length ? expanded : tokens;
+
+      // 3) Exact match en Codigo/Barras (soporta mayúsculas y dígitos puros)
+      const qUpper = base.toUpperCase();
+      const onlyDigits = base.replace(/\D/g, "");
+      const or: any[] = [
+        { Codigo: base },
+        { Codigo: qUpper },
+        { Barras: base },
+      ];
+      if (onlyDigits.length >= 6) or.push({ Barras: onlyDigits }); // EAN/UPC
+
+      // 4) Regex acento-insensible en campos de texto
+      const TEXT_FIELDS = ["Descripcion", "NomMarca", "Nomfabricante"];
+      for (const t of useTokens) {
+        const rx = accentTokenRx(t);
+        for (const f of TEXT_FIELDS) {
+          or.push({ [f]: { $regex: rx } });
+        }
+      }
+
+      baseAnd.push({ $or: or });
+    }
   }
 
   if (excludeCodigo) baseAnd.push({ Codigo: { $ne: excludeCodigo } });
@@ -369,9 +439,10 @@ productsRoute.get("/:codigo/suggest", async (c) => {
   const baseFab = !Array.isArray(base) ? base.Fabricante ?? null : null;
 
   // Precio base para proximidad (usa PVP, o Precio si no hay)
-  const basePrice = base && typeof base === "object" && !Array.isArray(base)
-    ? Number((base as any).Precio ?? 0) || 0
-    : 0;
+  const basePrice =
+    base && typeof base === "object" && !Array.isArray(base)
+      ? Number((base as any).Precio ?? 0) || 0
+      : 0;
 
   // 3) Pipeline de candidatos
   const pipeline: any[] = [];
@@ -736,7 +807,6 @@ productsRoute.patch(
   async (c) => {
     await connectDB();
     const codigo = c.req.param("codigo");
-    console.log("PATCH /products/:codigo/promo-catalogo", codigo);
 
     let body: any;
     try {
@@ -845,47 +915,174 @@ productsRoute.post("/promo-catalogo/bulk", authMiddleware(true), async (c) => {
 
 productsRoute.get("/catalogo/:codFami", async (c) => {
   try {
-    const codFami = c.req.param("codFami");
-    const onlyAvailable = c.req.query("onlyAvailable") === "true";
+    // ---------- Helpers ----------
+    const csv = (s?: string | null) =>
+      (s ?? "")
+        .split(/[,\s]+/)
+        .map((x) => x.trim())
+        .filter(Boolean);
 
-    if (!codFami) {
+    const decodeSafe = (v?: string | null) => {
+      if (!v) return "";
+      let s = String(v).replace(/\+/g, "%20");
+      for (let i = 0; i < 2; i++) {
+        try {
+          const d = decodeURIComponent(s);
+          if (d === s) break;
+          s = d;
+        } catch {
+          break;
+        }
+      }
+      return s;
+    };
+
+    const toUpperArr = (arr: string[]) => arr.map((x) => x.toUpperCase());
+
+    const parseCadenaItem = (s: string) => {
+      // Formatos: B-6-2 | B-6 | B--2 | B
+      const [f, g, sub] = s.split(/[-_]/).map((x) => x?.trim());
+      return {
+        CodFami: f ? f.toUpperCase() : undefined,
+        CodGrupo: g ?? undefined,
+        CodSubgrupo: sub ?? undefined,
+      };
+    };
+
+    // ---------- Params & Query ----------
+    const codFamiParam = c.req.param("codFami"); // puede venir CSV: A,B
+    if (codFamiParam == null) {
       return c.json({ ok: false, error: "Falta parámetro codFami" }, 400);
     }
 
-    // 🔹 Buscar productos de la familia
-    let products = await Product.find({ CodFami: codFami })
-      .sort({ Descripcion: 1 })
-      .lean();
+    // Soporta múltiples familias en el path, e ignora '*' o 'all'
+    const famis = toUpperArr(
+      csv(decodeSafe(codFamiParam)).filter((x) => x !== "*" && x !== "ALL")
+    );
 
-    // 🔹 Si se pide solo los disponibles, filtramos por existencias > 0
-    if (onlyAvailable) {
-      interface Existencia {
-        Bodega?: string;
-        Stand?: string;
-        Existencia?: number | string | null;
+    const onlyAvailable = c.req.query("onlyAvailable") === "true";
+    const bodegas = csv(c.req.query("bodegas")).length
+      ? csv(c.req.query("bodegas"))
+      : ["01", "06"];
+    const stands = csv(c.req.query("stands"));
+
+    // Listas sueltas (CSV)
+    const grupos = csv(c.req.query("codGrupo"));
+    const subgrupos = csv(
+      c.req.query("codSubGrupo") ?? c.req.query("codSubgrupo")
+    );
+
+    // Múltiples combinaciones: 'cadenas=B-6-2;A-1  ; C--2'
+    const cadenasRaw = decodeSafe(c.req.query("cadenas"));
+    const cadenas = cadenasRaw
+      .split(/[;|]/)
+      .map((x) => x.trim())
+      .filter(Boolean);
+
+    // Una sola combinación 'cadena=B-6-2' (compatibilidad)
+    const cadenaSingle = decodeSafe(c.req.query("cadena"));
+    if (cadenaSingle) cadenas.push(cadenaSingle);
+
+    // ---------- $match jerárquico ----------
+    const matchOr: any[] = [];
+
+    if (cadenas.length) {
+      // OR por cada combinación
+      for (const cad of cadenas) {
+        const { CodFami, CodGrupo, CodSubgrupo } = parseCadenaItem(cad);
+        const exprAnd: any[] = [];
+        if (CodFami) exprAnd.push({ $eq: [{ $toUpper: "$CodFami" }, CodFami] });
+        if (CodGrupo)
+          exprAnd.push({ $eq: [{ $toString: "$CodGrupo" }, String(CodGrupo)] });
+        if (CodSubgrupo)
+          exprAnd.push({
+            $eq: [{ $toString: "$CodSubgrupo" }, String(CodSubgrupo)],
+          });
+        if (exprAnd.length) matchOr.push({ $expr: { $and: exprAnd } });
       }
-
-      interface ProductDoc {
-        Existencias?: Existencia[];
-        RefCatalogo?: boolean;
-        [key: string]: any;
-      }
-
-      products = products.filter((p: ProductDoc) =>
-        (p.Existencias as Existencia[] | undefined)?.some(
-          (e: Existencia) => Number(e.Existencia ?? 0) > 0
-        )
-      );
     }
 
-    // 🔹 Separar según RefCatalogo
-    const dataRef = products.filter((p) => p.RefCatalogo === true);
-    const finalData = products.filter((p) => !p.RefCatalogo);
+    const exprAndDims: any[] = [];
+    if (famis.length)
+      exprAndDims.push({ $in: [{ $toUpper: "$CodFami" }, famis] });
+    if (grupos.length)
+      exprAndDims.push({ $in: [{ $toString: "$CodGrupo" }, grupos] });
+    if (subgrupos.length)
+      exprAndDims.push({
+        $in: [{ $toString: "$CodSubgrupo" }, subgrupos],
+      });
+
+    const pipeline: any[] = [];
+
+    if (matchOr.length) {
+      // Si hay combinaciones, priorizamos OR de combos
+      pipeline.push({ $match: { $or: matchOr } });
+    } else if (exprAndDims.length) {
+      // Si no hay combos, usamos AND por dimensión
+      pipeline.push({ $match: { $expr: { $and: exprAndDims } } });
+    } else if (famis.length) {
+      // Solo familias (del path)
+      pipeline.push({
+        $match: { $expr: { $in: [{ $toUpper: "$CodFami" }, famis] } },
+      });
+    } else {
+      // Si el path tenía '*' o 'all', no filtramos por familia
+      // (sin $match jerárquico)
+    }
+
+    // ---------- Disponibilidad por bodegas/stands ----------
+    pipeline.push(
+      {
+        $addFields: {
+          ExistenciasFiltradas: {
+            $filter: {
+              input: { $ifNull: ["$Existencias", []] },
+              as: "ex",
+              cond: {
+                $and: [
+                  { $in: ["$$ex.Bodega", bodegas] },
+                  stands.length
+                    ? { $in: ["$$ex.Stand", stands] }
+                    : { $literal: true },
+                ],
+              },
+            },
+          },
+        },
+      },
+      {
+        $addFields: {
+          TotalExist: {
+            $sum: {
+              $map: {
+                input: "$ExistenciasFiltradas",
+                as: "ex",
+                in: { $toDouble: { $ifNull: ["$$ex.Existencia", "0"] } },
+              },
+            },
+          },
+        },
+      }
+    );
+
+    if (onlyAvailable) {
+      pipeline.push({ $match: { $expr: { $gt: ["$TotalExist", 0] } } });
+    }
+
+    // Orden alfabético
+    pipeline.push({ $sort: { Descripcion: 1 } });
+
+    // Ejecutar
+    const products = await Product.aggregate(pipeline).allowDiskUse(true);
+
+    // ---------- Mismo shape de salida ----------
+    const dataRef = products.filter((p: any) => p.RefCatalogo === true);
+    const finalData = products.filter((p: any) => !p.RefCatalogo);
 
     return c.json({
       ok: true,
-      codFami,
-      total: products.length,
+      codFami: codFamiParam, // mantenemos el campo
+      total: products.length, // igual que antes
       finalData,
       dataRef,
     });

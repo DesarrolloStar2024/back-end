@@ -11,6 +11,8 @@ import { connectDB } from "./config/index.js";
 import { syncRoute } from "./routes/sync.js";
 import { authRoute } from "./routes/auth.js";
 import { sysplusRoute } from "./routes/sysplus.js";
+import { catalogosRoute } from "./routes/catalogos.js";
+import { categoriasRoute } from "./routes/categorias.js";
 
 const app = new Hono();
 
@@ -45,10 +47,12 @@ app.route("/superadmins", superAdminsRoute);
 app.route("/sync", syncRoute);
 app.route("/auth", authRoute);
 app.route("/sysplus", sysplusRoute);
+app.route("/catalogos", catalogosRoute);
+app.route("/categorias", categoriasRoute);
 
 // --- Ejecución local ---
 if (!process.env.VERCEL) {
-  const PORT = process.env.PORT || 3003;
+  const PORT = process.env.PORT || 4000;
   serve({
     fetch: app.fetch,
     port: Number(PORT),
