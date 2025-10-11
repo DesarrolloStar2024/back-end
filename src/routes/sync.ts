@@ -9,7 +9,7 @@ import { authMiddleware } from "../middleware/auth.js";
 export const syncRoute = new Hono();
 
 // ====== CONFIG FUENTE REMOTA ======
-const SOURCE_BASE = process.env.SOURCE_BASE ?? "http://190.60.237.164";
+const SOURCE_BASE = process.env.SOURCE_BASE;
 
 // ====== HELPERS ======
 const chunk = <T>(arr: T[], size: number) => {
