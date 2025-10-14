@@ -24,6 +24,7 @@ app.use(
       const allowed = [
         "https://beta.starprofessional.com.co",
         "http://localhost:5173",
+        "https://www.starprofessional.com.co",
       ];
 
       if (!origin) return "*"; // para requests directas desde navegador

@@ -313,7 +313,7 @@ syncRoute.post("/stock", authMiddleware(true), async (c) => {
 // Frontend: EventSource('/sync/full/stream?size=3000&codes=314BP,ABC&batchSize=800')
 // /sync/full/stream
 syncRoute.get("/full/stream", authMiddleware(true), (c) => {
-  const size = Number(c.req.query("size") ?? "3000");
+  const size = Number(c.req.query("size") ?? "15000");
   const batchSize = Number(c.req.query("batchSize") ?? "800");
   const codes = (c.req.query("codes") ?? "")
     .split(",")
