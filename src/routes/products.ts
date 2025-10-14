@@ -960,11 +960,9 @@ productsRoute.get("/catalogo/:codFami", async (c) => {
       csv(decodeSafe(codFamiParam)).filter((x) => x !== "*" && x !== "ALL")
     );
 
-    const onlyAvailable = c.req.query("onlyAvailable") === "true";
-    const bodegas = csv(c.req.query("bodegas")).length
-      ? csv(c.req.query("bodegas"))
-      : ["01", "06"];
-    const stands = csv(c.req.query("stands"));
+    // Solo bodegas 01 y 06
+    const bodegas = ["01", "06"];
+    const stands: string[] = [];
 
     // Listas sueltas (CSV)
     const grupos = csv(c.req.query("codGrupo"));
@@ -1030,7 +1028,7 @@ productsRoute.get("/catalogo/:codFami", async (c) => {
       // (sin $match jerárquico)
     }
 
-    // ---------- Disponibilidad por bodegas/stands ----------
+    // ---------- Disponibilidad por bodegas 01 y 06 ----------
     pipeline.push(
       {
         $addFields: {
@@ -1065,9 +1063,8 @@ productsRoute.get("/catalogo/:codFami", async (c) => {
       }
     );
 
-    if (onlyAvailable) {
-      pipeline.push({ $match: { $expr: { $gt: ["$TotalExist", 0] } } });
-    }
+    // Solo productos con existencia en bodegas 01 y 06
+    pipeline.push({ $match: { $expr: { $gt: ["$TotalExist", 0] } } });
 
     // Orden alfabético
     pipeline.push({ $sort: { Descripcion: 1 } });
