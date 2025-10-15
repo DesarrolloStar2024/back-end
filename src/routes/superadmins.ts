@@ -66,18 +66,11 @@ superAdminsRoute.post("/", authMiddleware(true), async (c) => {
   const body = await c.req.json();
   if (!body?.Id || !body?.Codigo)
     return c.json({ message: "Id y Codigo son requeridos" }, 400);
-  try {
-    await SuperAdmin.create({
-      Id: String(body.Id).trim(),
-      Codigo: String(body.Codigo).trim(),
-    });
-    return c.json({ message: "OK" });
-  } catch (err: any) {
-    if (err.code === 11000) {
-      return c.json({ message: "Codigo debe ser único" }, 400);
-    }
-    return c.json({ message: err.message }, 500);
-  }
+  await SuperAdmin.create({
+    Id: String(body.Id).trim(),
+    Codigo: String(body.Codigo).trim(),
+  });
+  return c.json({ message: "OK" });
 });
 
 // PUT /api/superadmins/:id
@@ -87,16 +80,9 @@ superAdminsRoute.put("/:id", authMiddleware(true), async (c) => {
   const body = await c.req.json();
   const upd: any = {};
   if (body?.Codigo) upd.Codigo = String(body.Codigo).trim();
-  try {
-    const r = await SuperAdmin.updateOne({ Id: id }, { $set: upd });
-    if (!r.matchedCount) return c.json({ message: "No encontrado" }, 404);
-    return c.json({ message: "OK" });
-  } catch (err: any) {
-    if (err.code === 11000) {
-      return c.json({ message: "Codigo debe ser único" }, 400);
-    }
-    return c.json({ message: err.message }, 500);
-  }
+  const r = await SuperAdmin.updateOne({ Id: id }, { $set: upd });
+  if (!r.matchedCount) return c.json({ message: "No encontrado" }, 404);
+  return c.json({ message: "OK" });
 });
 
 // DELETE /api/superadmins/:id
@@ -120,16 +106,12 @@ superAdminsRoute.post("/upsert", async (c) => {
       const Id = String(row.Id || "").trim();
       const Codigo = String(row.Codigo || "").trim();
       if (!Id || !Codigo) return;
-      try {
-        await SuperAdmin.updateOne(
-          { Codigo },
-          { $set: { Id, Codigo } },
-          { upsert: true }
-        );
-        upserts++;
-      } catch (err: any) {
-        // Si hay error de duplicidad, no se incrementa el contador
-      }
+      await SuperAdmin.updateOne(
+        { Id },
+        { $set: { Id, Codigo } },
+        { upsert: true }
+      );
+      upserts++;
     })
   );
   return c.json({ message: "OK", upserts });
