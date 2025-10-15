@@ -9,7 +9,7 @@ export interface ISuperAdmin extends Document {
 
 const SuperAdminSchema = new Schema<ISuperAdmin>(
   {
-    Id: { type: String, required: true, unique: true, trim: true }, // índice ya creado
+    Id: { type: String, required: true, trim: true }, // índice ya creado
     Codigo: { type: String, required: true, trim: true },
   },
   { timestamps: true }
