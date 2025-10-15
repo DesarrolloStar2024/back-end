@@ -1,22 +1,22 @@
 import mongoose, { Schema, Document } from "mongoose";
 
 export interface ISuperAdmin extends Document {
-  Id: string; // identificador (único)
-  Codigo: string; // código asociado
+  Id: string; // identificador (puede repetirse)
+  Codigo: string; // código asociado (único)
   createdAt?: Date;
   updatedAt?: Date;
 }
 
 const SuperAdminSchema = new Schema<ISuperAdmin>(
   {
-    Id: { type: String, required: true, trim: true }, // índice ya creado
-    Codigo: { type: String, required: true, trim: true },
+    Id: { type: String, required: true, trim: true }, // NO es único
+    Codigo: { type: String, required: true, trim: true, unique: true }, // ÚNICO
   },
   { timestamps: true }
 );
 
-// Índices adicionales
-SuperAdminSchema.index({ Codigo: 1 });
+// Índice único para Codigo
+SuperAdminSchema.index({ Codigo: 1 }, { unique: true });
 
 export const SuperAdmin =
   mongoose.models.SuperAdmin ||
