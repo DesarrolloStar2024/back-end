@@ -15,6 +15,72 @@ import { authMiddleware } from "../middleware/auth.js";
 
 export const productsRoute = new Hono();
 
+// === Helpers de búsqueda acento-insensible ===
+const escapeRx = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+// Mapea caracteres a clases con acentos (para tokens y frases)
+const charMap: Record<string, string> = {
+  a: "[aáàäâAÁÀÄÂ]",
+  e: "[eéèëêEÉÈËÊ]",
+  i: "[iíìïîIÍÌÏÎ]",
+  o: "[oóòöôOÓÒÖÔ]",
+  u: "[uúùüûUÚÙÜÛ]",
+  n: "[nñNÑ]",
+};
+const accentify = (s: string) =>
+  [...s].map((ch) => charMap[ch.toLowerCase()] ?? escapeRx(ch)).join("");
+
+// Regex para **frases completas** (espacios flexibles)
+const rxPhrase = (phrase: string) => {
+  const parts = phrase.trim().split(/\s+/g);
+  // Entre palabras acepta uno o más espacios (o puntuación mínima)
+  const joined = parts.map((p) => accentify(p)).join("\\s+");
+  return new RegExp(joined, "i");
+};
+
+// Regex para **token** (palabra suelta)
+const rxToken = (tok: string) => new RegExp(accentify(tok.trim()), "i");
+
+// Quita duplicados case/diacrítico-insensible
+const uniqCi = (arr: string[]) => {
+  const seen = new Set<string>();
+  const norm = (s: string) =>
+    s
+      .normalize("NFD")
+      .replace(/\p{Diacritic}/gu, "")
+      .toLowerCase()
+      .trim();
+  return arr.filter((s) => {
+    const k = norm(s);
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+};
+
+// Busca sinónimos **bidireccionalmente** en tu colección Synonym
+// Estructura esperada del doc: { term: string, synonyms: string[] }
+async function getPhraseVariantsBidirectional(base: string) {
+  const rxeq = rxPhrase(base); // acento-insensible
+  const docs = await Synonym.find({
+    $or: [
+      { term: { $regex: rxeq } },
+      { synonyms: { $elemMatch: { $regex: rxeq } } },
+    ],
+  }).lean();
+
+  const variants = [
+    base,
+    ...docs.flatMap((d) => [d.term, ...(d.synonyms || [])]),
+  ];
+  // Limita para no explotar el $or si hay muchísimos sinónimos
+  return uniqCi(variants).slice(0, 12);
+}
+
+// Convierte frase → tokens (usa tu toTokens)
+const tokensFrom = (s: string) =>
+  toTokens(String(s ?? "").trim()).filter(Boolean);
+
 // routes/products.ts (sustituye el GET "/" por esta versión)
 productsRoute.get("/", async (c) => {
   await connectDB();
@@ -202,14 +268,12 @@ productsRoute.get("/", async (c) => {
   if (descripcion)
     baseAnd.push({ Descripcion: { $regex: new RegExp(descripcion, "i") } });
 
-  // Búsqueda flexible con sinónimos + exact match en Codigo/Barras
-  // Búsqueda flexible con decodificación, acentos y tolerancia a tecleo
+  // Búsqueda flexible con sinónimos (frases y tokens) + exact match en Codigo/Barras
   if (q) {
-    // 1) Decodifica y limpia
+    // 1) Decodifica y limpia (mantén tu lógica)
     const decodeQuerySafe = (v: string) => {
       let s = String(v ?? "").replace(/\+/g, "%20");
       for (let i = 0; i < 2; i++) {
-        // maneja doble-encode sin romper
         try {
           const d = decodeURIComponent(s);
           if (d === s) break;
@@ -220,54 +284,53 @@ productsRoute.get("/", async (c) => {
       }
       return s;
     };
-    const stripRepeats = (s: string) => s.replace(/(.)\1{2,}/g, "$1$1"); // pañosss -> pañoss
+    const stripRepeats = (s: string) => s.replace(/(.)\1{2,}/g, "$1$1");
     const base = stripRepeats(decodeQuerySafe(q)).trim();
 
     if (base) {
-      // 2) Helpers para acentos (regex acento-insensible) y tokens
-      const toBase = (s: string) =>
-        s
-          .normalize("NFD")
-          .replace(/\p{Diacritic}/gu, "")
-          .toLowerCase(); // requiere Node 16+
-      const escapeRx = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      const accentTokenRx = (t: string) => {
-        const b = toBase(t);
-        const map: Record<string, string> = {
-          a: "[aáàäâAÁÀÄÂ]",
-          e: "[eéèëêEÉÈËÊ]",
-          i: "[iíìïîIÍÌÏÎ]",
-          o: "[oóòöôOÓÒÖÔ]",
-          u: "[uúùüûUÚÙÜÛ]",
-          n: "[nñNÑ]",
-        };
-        const pattern = [...b].map((ch) => map[ch] ?? escapeRx(ch)).join("");
-        return new RegExp(pattern, "i");
-      };
+      // 2) Construye variantes de **frase** (bidireccional) y sus **sets de tokens**
+      const phraseVariants = await getPhraseVariantsBidirectional(base);
+      // Además, expande tokens por sinónimos (tu función actual) para enriquecer
+      const baseTokens = tokensFrom(base);
+      const expandedTokenList = await expandWithSynonyms(baseTokens, Synonym); // << ya la tienes
+      const tokenVariantsSets: string[][] = uniqCi([
+        baseTokens.join(" "),
+        ...phraseVariants.map((v) => tokensFrom(v).join(" ")),
+        expandedTokenList.join(" "),
+      ])
+        .map((s) => s.split(/\s+/g).filter(Boolean))
+        .filter((set) => set.length > 0)
+        .slice(0, 16); // safety
 
-      const tokens = toTokens(base);
-      const expanded = await expandWithSynonyms(tokens, Synonym);
-      const useTokens = expanded.length ? expanded : tokens;
+      const TEXT_FIELDS = ["Descripcion", "NomMarca", "Nomfabricante"];
 
-      // 3) Exact match en Codigo/Barras (soporta mayúsculas y dígitos puros)
+      // 3) $or acumulado
+      const or: any[] = [];
+
+      // 3a) Exact matches código/barras (tal como ya hacías)
       const qUpper = base.toUpperCase();
       const onlyDigits = base.replace(/\D/g, "");
-      const or: any[] = [
-        { Codigo: base },
-        { Codigo: qUpper },
-        { Barras: base },
-      ];
-      if (onlyDigits.length >= 6) or.push({ Barras: onlyDigits }); // EAN/UPC
+      or.push({ Codigo: base }, { Codigo: qUpper }, { Barras: base });
+      if (onlyDigits.length >= 6) or.push({ Barras: onlyDigits });
 
-      // 4) Regex acento-insensible en campos de texto
-      const TEXT_FIELDS = ["Descripcion", "NomMarca", "Nomfabricante"];
-      for (const t of useTokens) {
-        const rx = accentTokenRx(t);
+      // 3b) Match por **frase completa** (acento-insensible) en cada campo de texto
+      for (const phrase of phraseVariants) {
+        const rx = rxPhrase(phrase);
         for (const f of TEXT_FIELDS) {
           or.push({ [f]: { $regex: rx } });
         }
       }
 
+      // 3c) Match por **todas las palabras** (AND) del set en el **mismo campo**
+      for (const set of tokenVariantsSets) {
+        for (const f of TEXT_FIELDS) {
+          or.push({
+            $and: set.map((tok) => ({ [f]: { $regex: rxToken(tok) } })),
+          });
+        }
+      }
+
+      // 4) Aplica al $match base
       baseAnd.push({ $or: or });
     }
   }
