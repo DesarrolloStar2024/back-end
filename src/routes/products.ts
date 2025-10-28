@@ -344,29 +344,73 @@ productsRoute.get("/", async (c) => {
 
   // ⇒ Calculamos totalExist en las bodegas seleccionadas, y stands coincidentes
   pipeline.push(
-    // filtra existencias a bodegas elegidas
+    // 1) Filtra a las bodegas elegidas (por default ["01","06"])
     {
       $addFields: {
         ExistenciasFiltradas: {
           $filter: {
             input: { $ifNull: ["$Existencias", []] },
             as: "ex",
-            cond: { $in: ["$$ex.Bodega", bodegas] },
+            cond: { $in: ["$$ex.Bodega", bodegas] }, // p.ej. ["01","06"]
           },
         },
       },
     },
-    // suma de existencias numéricas
+    // 2) Si hay stands seleccionados, volvemos a filtrar la lista
+    ...(stands.length
+      ? [
+          {
+            $addFields: {
+              ExistenciasFiltradas: {
+                $filter: {
+                  input: "$ExistenciasFiltradas",
+                  as: "ex",
+                  cond: { $in: ["$$ex.Stand", stands] },
+                },
+              },
+            },
+          },
+        ]
+      : []),
+    // 3) Sumas específicas por bodega y total 01+06
+    {
+      $addFields: {
+        Bodega01: {
+          $sum: {
+            $map: {
+              input: {
+                $filter: {
+                  input: "$ExistenciasFiltradas",
+                  as: "ex",
+                  cond: { $eq: ["$$ex.Bodega", "01"] },
+                },
+              },
+              as: "ex2",
+              in: { $toDouble: { $ifNull: ["$$ex2.Existencia", "0"] } },
+            },
+          },
+        },
+        Bodega06: {
+          $sum: {
+            $map: {
+              input: {
+                $filter: {
+                  input: "$ExistenciasFiltradas",
+                  as: "ex",
+                  cond: { $eq: ["$$ex.Bodega", "06"] },
+                },
+              },
+              as: "ex2",
+              in: { $toDouble: { $ifNull: ["$$ex2.Existencia", "0"] } },
+            },
+          },
+        },
+      },
+    },
     {
       $addFields: {
         TotalExist: {
-          $sum: {
-            $map: {
-              input: "$ExistenciasFiltradas",
-              as: "ex",
-              in: { $toDouble: { $ifNull: ["$$ex.Existencia", "0"] } },
-            },
-          },
+          $add: [{ $ifNull: ["$Bodega01", 0] }, { $ifNull: ["$Bodega06", 0] }],
         },
       },
     }
@@ -431,31 +475,19 @@ productsRoute.get("/", async (c) => {
     });
   }
 
-  // Ordenamiento
-  const order = (c.req.query("order") || "alpha").toLowerCase(); // 'alpha' | 'total' | 'bodega'
+  // Ordenar por existencia total (01+06) o por nombre (ambos con asc/desc)
+  const order = (c.req.query("order") || "alpha").toLowerCase(); // 'alpha' | 'total'
   const dir = (
     c.req.query("dir") || (order === "alpha" ? "asc" : "desc")
   ).toLowerCase();
   const sortDir = dir === "asc" ? 1 : -1;
 
-  // Orden alfabético SIEMPRE
-  // ✅ NUEVO: sort dinámico
-  if (order === "bodega") {
-    // Ordena por cada bodega indicada (default: ["01","06"]) de mayor a menor,
-    // luego TotalExist (mismo dir) y por Descripcion asc para desempatar.
-    const sortStage: any = { $sort: {} };
-    for (const b of bodegas) {
-      sortStage.$sort[`BodegaSums.${b}`] = sortDir; // e.g. -1
-    }
-    sortStage.$sort.TotalExist = sortDir;
-    sortStage.$sort.Descripcion = 1;
-    pipeline.push(sortStage);
-  } else if (order === "total") {
-    pipeline.push({ $sort: { TotalExist: sortDir, Descripcion: 1 } });
+  if (order === "total") {
+    pipeline.push({ $sort: { TotalExist: sortDir, Descripcion: 1 } }); // desempate por nombre asc
   } else {
-    // 'alpha' (por defecto): alfabético
-    pipeline.push({ $sort: { Descripcion: 1 } });
+    pipeline.push({ $sort: { Descripcion: sortDir } });
   }
+
   // Paginado con facet
   pipeline.push({
     $facet: {
