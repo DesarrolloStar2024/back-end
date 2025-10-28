@@ -431,9 +431,31 @@ productsRoute.get("/", async (c) => {
     });
   }
 
-  // Orden alfabético SIEMPRE
-  pipeline.push({ $sort: { Descripcion: 1 } });
+  // Ordenamiento
+  const order = (c.req.query("order") || "alpha").toLowerCase(); // 'alpha' | 'total' | 'bodega'
+  const dir = (
+    c.req.query("dir") || (order === "alpha" ? "asc" : "desc")
+  ).toLowerCase();
+  const sortDir = dir === "asc" ? 1 : -1;
 
+  // Orden alfabético SIEMPRE
+  // ✅ NUEVO: sort dinámico
+  if (order === "bodega") {
+    // Ordena por cada bodega indicada (default: ["01","06"]) de mayor a menor,
+    // luego TotalExist (mismo dir) y por Descripcion asc para desempatar.
+    const sortStage: any = { $sort: {} };
+    for (const b of bodegas) {
+      sortStage.$sort[`BodegaSums.${b}`] = sortDir; // e.g. -1
+    }
+    sortStage.$sort.TotalExist = sortDir;
+    sortStage.$sort.Descripcion = 1;
+    pipeline.push(sortStage);
+  } else if (order === "total") {
+    pipeline.push({ $sort: { TotalExist: sortDir, Descripcion: 1 } });
+  } else {
+    // 'alpha' (por defecto): alfabético
+    pipeline.push({ $sort: { Descripcion: 1 } });
+  }
   // Paginado con facet
   pipeline.push({
     $facet: {
