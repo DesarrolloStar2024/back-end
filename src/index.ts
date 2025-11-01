@@ -13,6 +13,7 @@ import { authRoute } from "./routes/auth.js";
 import { sysplusRoute } from "./routes/sysplus.js";
 import { catalogosRoute } from "./routes/catalogos.js";
 import { categoriasRoute } from "./routes/categorias.js";
+import { quotesRoute } from "./routes/quotes.js";
 
 const app = new Hono();
 
@@ -51,6 +52,8 @@ app.route("/auth", authRoute);
 app.route("/sysplus", sysplusRoute);
 app.route("/catalogos", catalogosRoute);
 app.route("/categorias", categoriasRoute);
+app.get("/health", (c) => c.json({ ok: true }));
+app.route("/quotes", quotesRoute);
 
 // --- Ejecución local ---
 if (!process.env.VERCEL) {
