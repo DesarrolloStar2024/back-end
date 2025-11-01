@@ -28,6 +28,7 @@ export interface Quote extends Document {
   supplier: { name: string; phone?: string };
   vigenciaDays?: number;
   incoterm?: string; // opcional
+  observations?: string; // <<--- NUEVO (persistido)
   items: QuoteItem[];
   createdAt: Date;
 }
@@ -72,11 +73,18 @@ const QuoteSchema = new Schema<Quote>(
     },
     vigenciaDays: { type: Number },
     incoterm: { type: String, default: "FOB" },
+    observations: { type: String, default: "" }, // <<--- NUEVO (persistido)
     items: { type: [ItemSchema], default: [] },
     createdAt: { type: Date, default: Date.now },
   },
   { versionKey: false }
 );
+
+// (Opcional) índices útiles para búsquedas
+QuoteSchema.index({ createdAt: -1 });
+QuoteSchema.index({ code: 1 });
+QuoteSchema.index({ "supplier.name": 1 });
+QuoteSchema.index({ "items.reference": 1 });
 
 export const QuoteModel =
   mongoose.models.Quote || mongoose.model<Quote>("Quote", QuoteSchema);

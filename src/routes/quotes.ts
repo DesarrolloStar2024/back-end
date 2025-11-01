@@ -1,7 +1,6 @@
-// src/routes/quotes.route.ts
 import { Hono } from "hono";
 import { z } from "zod";
-import { connectDB } from "../config/index.js"; // tu helper existente
+import { connectDB } from "../config/index.js";
 import { QuoteModel } from "../models/Quote.js";
 import mongoose from "mongoose";
 
@@ -38,12 +37,12 @@ const bodyCreate = z.object({
     name: z.string().min(1),
     phone: z.string().optional(),
   }),
+  observations: z.string().optional(), // <<--- NUEVO (aceptado en create)
   vigenciaDays: z.coerce.number().int().positive().optional(),
   incoterm: z.string().optional(),
   items: z.array(itemSchema).min(1),
 });
 
-// Para PATCH aceptamos campos opcionales; si vienen items deben ser completos
 const bodyUpdate = z.object({
   code: z.string().optional(),
   supplier: z
@@ -52,6 +51,7 @@ const bodyUpdate = z.object({
       phone: z.string().optional(),
     })
     .optional(),
+  observations: z.string().optional(), // <<--- NUEVO (aceptado en patch)
   vigenciaDays: z.coerce.number().int().positive().optional(),
   incoterm: z.string().optional(),
   items: z.array(itemSchema).min(1).optional(),
@@ -108,6 +108,7 @@ quotesRoute.post("/", async (c) => {
       supplier: v.supplier,
       vigenciaDays: v.vigenciaDays,
       incoterm: v.incoterm || "FOB",
+      observations: v.observations || "", // <<--- NUEVO (guardar)
       items,
     });
 
@@ -130,6 +131,7 @@ quotesRoute.get("/", async (c) => {
             { "items.reference": { $regex: q, $options: "i" } },
             { "items.brand": { $regex: q, $options: "i" } },
             { code: { $regex: q, $options: "i" } },
+            { observations: { $regex: q, $options: "i" } }, // (opcional) buscar en obs
           ],
         }
       : {};
@@ -189,6 +191,8 @@ quotesRoute.patch("/:id", async (c) => {
       patch.vigenciaDays = v.vigenciaDays;
     if (typeof v.incoterm !== "undefined") patch.incoterm = v.incoterm;
     if (typeof v.supplier !== "undefined") patch.supplier = v.supplier;
+    if (typeof v.observations !== "undefined")
+      patch.observations = v.observations || ""; // <<--- NUEVO
     if (typeof v.items !== "undefined") patch.items = v.items.map(deriveFields);
 
     const updated = await QuoteModel.findByIdAndUpdate(
