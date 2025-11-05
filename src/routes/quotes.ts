@@ -6,11 +6,9 @@ import mongoose from "mongoose";
 
 export const quotesRoute = new Hono();
 
-/* ================== Schemas (Zod) ================== */
 const itemSchema = z.object({
   barcode: z.string().optional().default(""),
   reference: z.string().min(1),
-
   images: z.array(z.string()).optional().default([]),
 
   brand: z.string().optional().default(""),
@@ -18,6 +16,7 @@ const itemSchema = z.object({
   material: z.string().optional().default(""),
   colors: z.string().optional().default(""),
   measure: z.string().optional().default(""),
+  itemNote: z.string().optional().default(""),
 
   ctns: z.coerce.number().nonnegative().default(0),
   qtyPerCarton: z.coerce.number().nonnegative().default(0),
@@ -37,7 +36,7 @@ const bodyCreate = z.object({
     name: z.string().min(1),
     phone: z.string().optional(),
   }),
-  observations: z.string().optional(), // <<--- NUEVO (aceptado en create)
+  observations: z.string().optional(),
   vigenciaDays: z.coerce.number().int().positive().optional(),
   incoterm: z.string().optional(),
   items: z.array(itemSchema).min(1),
@@ -51,7 +50,7 @@ const bodyUpdate = z.object({
       phone: z.string().optional(),
     })
     .optional(),
-  observations: z.string().optional(), // <<--- NUEVO (aceptado en patch)
+  observations: z.string().optional(),
   vigenciaDays: z.coerce.number().int().positive().optional(),
   incoterm: z.string().optional(),
   items: z.array(itemSchema).min(1).optional(),
@@ -63,7 +62,6 @@ const qPagination = z.object({
   q: z.string().optional().default(""),
 });
 
-/* ================== Helpers ================== */
 type Item = z.infer<typeof itemSchema>;
 
 function deriveFields(it: Item) {
@@ -93,7 +91,6 @@ const paramsFromUrl = (url: string) =>
 
 const isObjectId = (id: string) => mongoose.Types.ObjectId.isValid(id);
 
-/* ================== Crear ================== */
 quotesRoute.post("/", async (c) => {
   await connectDB();
   try {
@@ -105,10 +102,13 @@ quotesRoute.post("/", async (c) => {
 
     const doc = await QuoteModel.create({
       code,
-      supplier: v.supplier,
+      supplier: {
+        name: v.supplier.name.trim(),
+        phone: (v.supplier.phone || "").trim(),
+      },
       vigenciaDays: v.vigenciaDays,
       incoterm: v.incoterm || "FOB",
-      observations: v.observations || "", // <<--- NUEVO (guardar)
+      observations: v.observations || "",
       items,
     });
 
@@ -118,7 +118,6 @@ quotesRoute.post("/", async (c) => {
   }
 });
 
-/* ================== Listar ================== */
 quotesRoute.get("/", async (c) => {
   await connectDB();
   try {
@@ -130,8 +129,13 @@ quotesRoute.get("/", async (c) => {
             { "supplier.name": { $regex: q, $options: "i" } },
             { "items.reference": { $regex: q, $options: "i" } },
             { "items.brand": { $regex: q, $options: "i" } },
+            { "items.descriptionEs": { $regex: q, $options: "i" } },
+            { "items.material": { $regex: q, $options: "i" } },
+            { "items.colors": { $regex: q, $options: "i" } },
+            { "items.measure": { $regex: q, $options: "i" } },
+            { "items.itemNote": { $regex: q, $options: "i" } },
             { code: { $regex: q, $options: "i" } },
-            { observations: { $regex: q, $options: "i" } }, // (opcional) buscar en obs
+            { observations: { $regex: q, $options: "i" } },
           ],
         }
       : {};
@@ -158,7 +162,6 @@ quotesRoute.get("/", async (c) => {
   }
 });
 
-/* ================== Obtener una ================== */
 quotesRoute.get("/:id", async (c) => {
   await connectDB();
   try {
@@ -174,7 +177,6 @@ quotesRoute.get("/:id", async (c) => {
   }
 });
 
-/* ================== Actualizar (PATCH) ================== */
 quotesRoute.patch("/:id", async (c) => {
   await connectDB();
   try {
@@ -190,9 +192,13 @@ quotesRoute.patch("/:id", async (c) => {
     if (typeof v.vigenciaDays !== "undefined")
       patch.vigenciaDays = v.vigenciaDays;
     if (typeof v.incoterm !== "undefined") patch.incoterm = v.incoterm;
-    if (typeof v.supplier !== "undefined") patch.supplier = v.supplier;
+    if (typeof v.supplier !== "undefined")
+      patch.supplier = {
+        name: v.supplier.name.trim(),
+        phone: (v.supplier.phone || "").trim(),
+      };
     if (typeof v.observations !== "undefined")
-      patch.observations = v.observations || ""; // <<--- NUEVO
+      patch.observations = v.observations || "";
     if (typeof v.items !== "undefined") patch.items = v.items.map(deriveFields);
 
     const updated = await QuoteModel.findByIdAndUpdate(
@@ -208,7 +214,6 @@ quotesRoute.patch("/:id", async (c) => {
   }
 });
 
-/* ================== Eliminar (DELETE) ================== */
 quotesRoute.delete("/:id", async (c) => {
   await connectDB();
   try {
