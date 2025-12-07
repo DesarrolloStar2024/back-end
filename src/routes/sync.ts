@@ -138,11 +138,16 @@ async function writeProducts(
   onProgress?: (delta: number) => void
 ) {
   let done = 0;
+  const syncedCodes = new Set<string>();
+
   for (const group of chunk(products, batchSize)) {
     const ops = group
       .map((r) => {
         const p = normalizeProduct(r);
         if (!p.Codigo) return null;
+
+        syncedCodes.add(p.Codigo);
+
         return {
           updateOne: {
             filter: { Codigo: p.Codigo },
@@ -154,11 +159,14 @@ async function writeProducts(
       .filter(Boolean) as any[];
 
     if (!ops.length) continue;
+
     await Product.bulkWrite(ops, { ordered: false });
+
     done += group.length;
     onProgress?.(group.length);
   }
-  return done;
+
+  return { done, syncedCodes };
 }
 
 async function writePrices(
@@ -241,7 +249,7 @@ async function writeStocks(
 syncRoute.post("/full", authMiddleware(true), async (c) => {
   const {
     codes,
-    size = 3000,
+    size = 5000,
     batchSize = 800,
   } = await c.req.json().catch(() => ({}));
   let total = 0;
@@ -310,8 +318,6 @@ syncRoute.post("/stock", authMiddleware(true), async (c) => {
 });
 
 // ====== ENDPOINTS CON PROGRESO SSE (GET) ======
-// Frontend: EventSource('/sync/full/stream?size=3000&codes=314BP,ABC&batchSize=800')
-// /sync/full/stream
 syncRoute.get("/full/stream", authMiddleware(true), (c) => {
   const size = Number(c.req.query("size") ?? "15000");
   const batchSize = Number(c.req.query("batchSize") ?? "800");
@@ -322,7 +328,7 @@ syncRoute.get("/full/stream", authMiddleware(true), (c) => {
 
   return streamSSE(c, async (stream) => {
     try {
-      // 1) avisar al front de inmediato
+      // === 1) Avisamos que vamos a extraer datos ===
       await stream.writeSSE({
         event: "status",
         data: JSON.stringify({
@@ -331,8 +337,9 @@ syncRoute.get("/full/stream", authMiddleware(true), (c) => {
         }),
       });
 
-      // 2) descargar (ahora dentro del stream)
+      // === 2) Descargamos datos de Sysplus ===
       let all: any[] = [];
+
       if (codes.length) {
         for (const code of codes) {
           const arr = await fetchArticulos(size, code);
@@ -341,26 +348,64 @@ syncRoute.get("/full/stream", authMiddleware(true), (c) => {
       } else {
         all = await fetchArticulos(size);
       }
+
+      // === 3) Validar respuesta de Sysplus ===
+      if (!all || all.length === 0) {
+        await stream.writeSSE({
+          event: "status",
+          data: JSON.stringify({
+            phase: "error",
+            message:
+              "Sysplus no respondió o devolvió 0 productos. No se aplicaron cambios.",
+          }),
+        });
+
+        await stream.writeSSE({
+          event: "done",
+          data: JSON.stringify({
+            done: 0,
+            total: 0,
+            percent: 0,
+            aborted: true,
+          }),
+        });
+
+        return;
+      }
+
       const total = all.length;
 
       await stream.writeSSE({
         event: "status",
         data: JSON.stringify({
           phase: "counted",
-          message: `Descarga completa. ${total} registros.`,
+          message: `Descarga completa. ${total} registros recibidos.`,
         }),
       });
 
-      // 3) anunciar el total y procesar
+      // === 4) Ahora sí podemos limpiar la base ===
+      await stream.writeSSE({
+        event: "status",
+        data: JSON.stringify({
+          phase: "clean",
+          message: "Datos válidos detectados. Limpiando base de datos…",
+        }),
+      });
+
+      // 👉 BORRAR SOLO SI HAY DATOS VÁLIDOS
+      await Product.deleteMany({});
+
+      // === 5) Iniciar guardado ===
       await stream.writeSSE({
         event: "start",
         data: JSON.stringify({ total }),
       });
+
       await stream.writeSSE({
         event: "status",
         data: JSON.stringify({
           phase: "write",
-          message: "Procesando y guardando en base de datos…",
+          message: "Procesando y guardando nuevos productos…",
         }),
       });
 
@@ -368,12 +413,14 @@ syncRoute.get("/full/stream", authMiddleware(true), (c) => {
       await writeProducts(all, batchSize, async (delta) => {
         done += delta;
         const percent = total ? Math.round((done / total) * 100) : 100;
+
         await stream.writeSSE({
           event: "progress",
           data: JSON.stringify({ done, total, percent }),
         });
       });
 
+      // === 6) Final ===
       await stream.writeSSE({
         event: "status",
         data: JSON.stringify({
@@ -381,9 +428,15 @@ syncRoute.get("/full/stream", authMiddleware(true), (c) => {
           message: "Sincronización completada.",
         }),
       });
+
       await stream.writeSSE({
         event: "done",
-        data: JSON.stringify({ done, total, percent: 100 }),
+        data: JSON.stringify({
+          done,
+          total,
+          percent: 100,
+          aborted: false,
+        }),
       });
     } catch (err: any) {
       await stream.writeSSE({
