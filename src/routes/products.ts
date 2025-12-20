@@ -165,12 +165,15 @@ productsRoute.get("/", async (c) => {
   // --------- Construir $match base (campos directos) ----------
   const baseAnd: any[] = [];
 
+  const escapeRegex = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
   if (title) {
-    // Busca por Descripcion (regex) o Código (exacto)
+    const safe = escapeRegex(title.trim());
+
     baseAnd.push({
       $or: [
-        { Descripcion: { $regex: new RegExp(title, "i") } },
-        { Codigo: title },
+        { Descripcion: { $regex: safe, $options: "i" } },
+        { Codigo: { $regex: `^${safe}`, $options: "i" } }, // <-- ya no es exacto
       ],
     });
   }
