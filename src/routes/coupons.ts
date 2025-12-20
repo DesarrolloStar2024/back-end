@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { connectDB } from "../config/index.js";
-import { Coupon } from "../models/Coupon.js";
 import { authMiddleware } from "../middleware/auth.js";
+import { CouponModel } from "../models/Coupon.js";
 
 export const couponsRoute = new Hono();
 
@@ -10,26 +10,22 @@ const normalizeCode = (v: unknown) =>
     .toUpperCase()
     .trim();
 
-/**
- * PUBLIC
- * POST /api/coupons/validate
- * body: { code: "BDSTAR" }
- * resp: { valid: true, code: "BDSTAR", discountPercentage: 0.07 }
- */
+type ValidateBody = { code?: string };
+type CouponValidateLean = { code: string; discountPercentage: number };
+
 couponsRoute.post("/validate", async (c) => {
   await connectDB();
 
-  const b = await c.req.json().catch(() => ({}));
+  const b = await c.req.json<ValidateBody>().catch((): ValidateBody => ({}));
   const code = normalizeCode(b.code);
 
   if (!code) return c.json({ valid: false, message: "Código requerido" }, 400);
 
-  const coupon = await Coupon.findOne(
-    { code, isActive: true },
-    { _id: 0, __v: 0 }
-  ).lean();
+  const coupon = await CouponModel.findOne({ code, isActive: true })
+    .select({ code: 1, discountPercentage: 1, _id: 0 })
+    .lean<CouponValidateLean>()
+    .exec();
 
-  // Respuesta genérica para no filtrar si existe o no
   if (!coupon) return c.json({ valid: false, message: "Cupón no válido" }, 404);
 
   return c.json({
@@ -58,12 +54,12 @@ couponsRoute.get("/", authMiddleware(true), async (c) => {
   if (q) filter.code = { $regex: new RegExp(`^${q}`) }; // empieza por
 
   const [items, totalDocs] = await Promise.all([
-    Coupon.find(filter, { __v: 0 })
+    CouponModel.find(filter, { __v: 0 })
       .sort({ code: 1 })
       .skip(skip)
       .limit(size)
       .lean(),
-    Coupon.countDocuments(filter),
+    CouponModel.countDocuments(filter),
   ]);
 
   return c.json({
@@ -83,7 +79,7 @@ couponsRoute.get("/:code", authMiddleware(true), async (c) => {
   await connectDB();
   const code = normalizeCode(c.req.param("code"));
 
-  const doc = await Coupon.findOne({ code }, { __v: 0 }).lean();
+  const doc = await CouponModel.findOne({ code }, { __v: 0 }).lean();
   if (!doc) return c.json({ message: "No encontrado" }, 404);
 
   return c.json(doc);
@@ -115,7 +111,7 @@ couponsRoute.post("/", authMiddleware(true), async (c) => {
   }
 
   try {
-    await Coupon.create({ code, discountPercentage, isActive });
+    await CouponModel.create({ code, discountPercentage, isActive });
     return c.json({ message: "OK" }, 201);
   } catch (err: any) {
     // Duplicado
@@ -148,7 +144,7 @@ couponsRoute.put("/:code", authMiddleware(true), async (c) => {
   }
   if (b.isActive !== undefined) update.isActive = Boolean(b.isActive);
 
-  const r = await Coupon.updateOne({ code }, { $set: update });
+  const r = await CouponModel.updateOne({ code }, { $set: update });
   if (!r.matchedCount) return c.json({ message: "No encontrado" }, 404);
 
   return c.json({ message: "OK" });
@@ -168,7 +164,7 @@ couponsRoute.patch("/:code", authMiddleware(true), async (c) => {
   if (b.isActive === undefined)
     return c.json({ message: "Nada para actualizar" }, 400);
 
-  const r = await Coupon.updateOne(
+  const r = await CouponModel.updateOne(
     { code },
     { $set: { isActive: Boolean(b.isActive) } }
   );
@@ -185,7 +181,7 @@ couponsRoute.delete("/:code", authMiddleware(true), async (c) => {
   await connectDB();
 
   const code = normalizeCode(c.req.param("code"));
-  const r = await Coupon.deleteOne({ code });
+  const r = await CouponModel.deleteOne({ code });
 
   if (!r.deletedCount) return c.json({ message: "No encontrado" }, 404);
   return c.json({ message: "OK" });

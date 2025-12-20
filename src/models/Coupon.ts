@@ -1,6 +1,6 @@
-import mongoose, { Schema, Document } from "mongoose";
+import mongoose, { Schema, type Model } from "mongoose";
 
-export interface ICoupon extends Document {
+export interface Coupon {
   code: string; // en MAYÚSCULAS
   discountPercentage: number; // 0.10 = 10%
   isActive: boolean;
@@ -8,7 +8,7 @@ export interface ICoupon extends Document {
   updatedAt: Date;
 }
 
-const CouponSchema = new Schema<ICoupon>(
+const CouponSchema = new Schema<Coupon>(
   {
     code: { type: String, required: true, unique: true, trim: true },
     discountPercentage: { type: Number, required: true, min: 0, max: 1 },
@@ -23,5 +23,7 @@ CouponSchema.pre("save", function (next) {
   next();
 });
 
-export const Coupon =
-  mongoose.models.Coupon || mongoose.model<ICoupon>("Coupon", CouponSchema);
+// 👇 clave: casteo de mongoose.models para conservar el tipo
+export const CouponModel: Model<Coupon> =
+  (mongoose.models.Coupon as Model<Coupon>) ||
+  mongoose.model<Coupon>("Coupon", CouponSchema);
