@@ -55,9 +55,9 @@ export interface IProduct extends Document {
 
 const ExistenciaSchema = new Schema<IExistencia>(
   {
-    Bodega: { type: String, required: true },
-    Existencia: { type: String, required: true },
-    Stand: { type: String, required: true },
+    Bodega: { type: String, required: false },
+    Existencia: { type: String, required: false },
+    Stand: { type: String, required: false },
   },
   { _id: false }
 );
