@@ -212,7 +212,7 @@ productsRoute.get("/", async (c) => {
 
   // --- Helpers separados (ID vs Nombre) ---
   function byMarcaIdStrict(id: string) {
-    return { Marca: id };
+    return { NomMarca: id };
   }
   function byFabricanteIdStrict(id: string) {
     return { Fabricante: id };
