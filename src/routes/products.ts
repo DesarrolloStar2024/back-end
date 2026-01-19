@@ -89,7 +89,7 @@ productsRoute.get("/", async (c) => {
   const toBool = (v?: string) =>
     v != null &&
     ["true", "1", "s", "si", "sí", "y", "yes"].includes(
-      String(v).toLowerCase()
+      String(v).toLowerCase(),
     );
   const csv = (s?: string) =>
     s
@@ -168,12 +168,31 @@ productsRoute.get("/", async (c) => {
   const escapeRegex = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
   if (title) {
-    const safe = escapeRegex(title.trim());
+    const raw = title.trim();
+    const safe = escapeRegex(raw);
+    const digits = raw.replace(/\D/g, "");
+    const safeDigits = escapeRegex(digits);
 
     baseAnd.push({
       $or: [
+        // Texto (ok)
         { Descripcion: { $regex: safe, $options: "i" } },
-        { Codigo: { $regex: `^${safe}`, $options: "i" } }, // <-- ya no es exacto
+
+        // Código: prefijo + contains
+        { Codigo: { $regex: `^${safe}`, $options: "i" } },
+        { Codigo: { $regex: safe, $options: "i" } }, // <- FIX: "4513" encuentra "BQY4513"
+
+        // Barras (si aplica)
+        { Barras: { $regex: `^${safe}`, $options: "i" } },
+        { Barras: { $regex: safe, $options: "i" } },
+
+        // Si el input tiene dígitos, búscalos dentro del código/barras
+        ...(digits.length >= 3
+          ? [
+              { Codigo: { $regex: safeDigits, $options: "i" } },
+              { Barras: { $regex: safeDigits, $options: "i" } },
+            ]
+          : []),
       ],
     });
   }
@@ -271,9 +290,17 @@ productsRoute.get("/", async (c) => {
   if (descripcion)
     baseAnd.push({ Descripcion: { $regex: new RegExp(descripcion, "i") } });
 
-  // Búsqueda flexible con sinónimos (frases y tokens) + exact match en Codigo/Barras
+  const normalizeCodeLike = (s: string) =>
+    String(s ?? "")
+      .trim()
+      .replace(/\s+/g, "") // quita espacios
+      .replace(/[-_./]/g, "") // quita separadores comunes
+      .toUpperCase();
+
+  const rxContainsCi = (s: string) => new RegExp(escapeRegex(s), "i");
+  const rxStartsCi = (s: string) => new RegExp("^" + escapeRegex(s), "i");
+
   if (q) {
-    // 1) Decodifica y limpia (mantén tu lógica)
     const decodeQuerySafe = (v: string) => {
       let s = String(v ?? "").replace(/\+/g, "%20");
       for (let i = 0; i < 2; i++) {
@@ -287,15 +314,21 @@ productsRoute.get("/", async (c) => {
       }
       return s;
     };
-    const stripRepeats = (s: string) => s.replace(/(.)\1{2,}/g, "$1$1");
-    const base = stripRepeats(decodeQuerySafe(q)).trim();
 
+    const stripRepeats = (s: string) => s.replace(/(.)\1{2,}/g, "$1$1");
+
+    const baseRaw = stripRepeats(decodeQuerySafe(q)).trim();
+    const base = baseRaw; // mantengo tu variable
     if (base) {
-      // 2) Construye variantes de **frase** (bidireccional) y sus **sets de tokens**
+      const baseUpper = base.toUpperCase();
+      const digits = base.replace(/\D/g, "");
+      const baseCodeNorm = normalizeCodeLike(base);
+      const digitsNorm = normalizeCodeLike(digits);
+
       const phraseVariants = await getPhraseVariantsBidirectional(base);
-      // Además, expande tokens por sinónimos (tu función actual) para enriquecer
       const baseTokens = tokensFrom(base);
-      const expandedTokenList = await expandWithSynonyms(baseTokens, Synonym); // << ya la tienes
+      const expandedTokenList = await expandWithSynonyms(baseTokens, Synonym);
+
       const tokenVariantsSets: string[][] = uniqCi([
         baseTokens.join(" "),
         ...phraseVariants.map((v) => tokensFrom(v).join(" ")),
@@ -303,20 +336,42 @@ productsRoute.get("/", async (c) => {
       ])
         .map((s) => s.split(/\s+/g).filter(Boolean))
         .filter((set) => set.length > 0)
-        .slice(0, 16); // safety
+        .slice(0, 16);
 
-      const TEXT_FIELDS = ["Descripcion", "NomMarca", "Nomfabricante"];
+      const TEXT_FIELDS = ["Descripcion", "NomMarca", "Nomfabricante"] as const;
 
-      // 3) $or acumulado
       const or: any[] = [];
 
-      // 3a) Exact matches código/barras (tal como ya hacías)
-      const qUpper = base.toUpperCase();
-      const onlyDigits = base.replace(/\D/g, "");
-      or.push({ Codigo: base }, { Codigo: qUpper }, { Barras: base });
-      if (onlyDigits.length >= 6) or.push({ Barras: onlyDigits });
+      // 1) Exactos (como ya tenías), pero normalizando para códigos comunes
+      or.push(
+        { Codigo: base },
+        { Codigo: baseUpper },
+        { Barras: base },
+        { Codigo: baseCodeNorm }, // <- útil si en BD guardan sin separadores
+        { Barras: baseCodeNorm },
+      );
 
-      // 3b) Match por **frase completa** (acento-insensible) en cada campo de texto
+      // 2) PARTIAL para Código/Barras (aquí está el fix para "4513" -> "BQY4513")
+      // Prioriza startsWith (mejor chance de usar índice) y luego contains
+      if (baseCodeNorm.length >= 2) {
+        or.push(
+          { Codigo: { $regex: rxStartsCi(baseCodeNorm) } },
+          { Codigo: { $regex: rxContainsCi(baseCodeNorm) } },
+          { Barras: { $regex: rxStartsCi(baseCodeNorm) } },
+          { Barras: { $regex: rxContainsCi(baseCodeNorm) } },
+        );
+      }
+
+      // 3) Si tiene dígitos, busca esos dígitos dentro del Código/Barras
+      // (esto resuelve específicamente el caso: buscar "4513" y encontrar "BQY4513")
+      if (digits.length >= 3) {
+        or.push(
+          { Codigo: { $regex: rxContainsCi(digitsNorm) } },
+          { Barras: { $regex: rxContainsCi(digitsNorm) } },
+        );
+      }
+
+      // 4) Frase completa (texto)
       for (const phrase of phraseVariants) {
         const rx = rxPhrase(phrase);
         for (const f of TEXT_FIELDS) {
@@ -324,7 +379,7 @@ productsRoute.get("/", async (c) => {
         }
       }
 
-      // 3c) Match por **todas las palabras** (AND) del set en el **mismo campo**
+      // 5) AND de tokens (texto)
       for (const set of tokenVariantsSets) {
         for (const f of TEXT_FIELDS) {
           or.push({
@@ -333,7 +388,6 @@ productsRoute.get("/", async (c) => {
         }
       }
 
-      // 4) Aplica al $match base
       baseAnd.push({ $or: or });
     }
   }
@@ -416,7 +470,7 @@ productsRoute.get("/", async (c) => {
           $add: [{ $ifNull: ["$Bodega01", 0] }, { $ifNull: ["$Bodega06", 0] }],
         },
       },
-    }
+    },
   );
 
   // Filtro por stands (opcional)
@@ -549,14 +603,14 @@ productsRoute.get("/:codigo/suggest", async (c) => {
   // Pequeño OR-regex para coincidencias en texto (usa util existente)
   const orRegex = buildOrRegex(
     ["Descripcion", "NomMarca", "Nomfabricante"],
-    searchTerms
+    searchTerms,
   );
 
-  const baseFami = !Array.isArray(base) ? base.CodFami ?? null : null;
-  const baseGrupo = !Array.isArray(base) ? base.CodGrupo ?? null : null;
-  const baseSub = !Array.isArray(base) ? base.CodSubgrupo ?? null : null;
-  const baseMarca = !Array.isArray(base) ? base.Marca ?? null : null;
-  const baseFab = !Array.isArray(base) ? base.Fabricante ?? null : null;
+  const baseFami = !Array.isArray(base) ? (base.CodFami ?? null) : null;
+  const baseGrupo = !Array.isArray(base) ? (base.CodGrupo ?? null) : null;
+  const baseSub = !Array.isArray(base) ? (base.CodSubgrupo ?? null) : null;
+  const baseMarca = !Array.isArray(base) ? (base.Marca ?? null) : null;
+  const baseFab = !Array.isArray(base) ? (base.Fabricante ?? null) : null;
 
   // Precio base para proximidad (usa PVP, o Precio si no hay)
   const basePrice =
@@ -609,7 +663,7 @@ productsRoute.get("/:codigo/suggest", async (c) => {
           },
         },
       },
-    }
+    },
   );
 
   if (stands.length) {
@@ -683,7 +737,7 @@ productsRoute.get("/:codigo/suggest", async (c) => {
         Descripcion: 1,
       },
     },
-    { $limit: limit }
+    { $limit: limit },
   );
 
   // 6) Ejecutar con collation ES
@@ -801,7 +855,7 @@ const toBoolish = (v: any) =>
   typeof v === "boolean"
     ? v
     : ["true", "1", "s", "si", "sí", "y", "yes"].includes(
-        String(v).toLowerCase()
+        String(v).toLowerCase(),
       );
 
 function parseCodesList(input: any): string[] {
@@ -826,7 +880,7 @@ type PromoRow = {
 };
 
 function parsePromoItems(
-  body: any
+  body: any,
 ): Array<{ Codigo: string; promo: string; activo: boolean }> {
   const out: Array<{ Codigo: string; promo: string; activo: boolean }> = [];
 
@@ -875,7 +929,7 @@ productsRoute.patch(
     const value = toBoolish(body.value);
     const res = await Product.updateOne(
       { Codigo: codigo },
-      { $set: { RefCatalogo: value } }
+      { $set: { RefCatalogo: value } },
     );
 
     return c.json({
@@ -885,7 +939,7 @@ productsRoute.patch(
       matched: res.matchedCount ?? 0,
       modified: res.modifiedCount ?? 0,
     });
-  }
+  },
 );
 
 // Actualiza RefCatalogo en lote por Codigos
@@ -908,7 +962,7 @@ productsRoute.post("/ref-catalogo/bulk", authMiddleware(true), async (c) => {
   const value = toBoolish(body.value);
   const res = await Product.updateMany(
     { Codigo: { $in: codes } },
-    { $set: { RefCatalogo: value } }
+    { $set: { RefCatalogo: value } },
   );
 
   return c.json({
@@ -941,14 +995,14 @@ productsRoute.patch(
     if (!hasActivo && !hasPromo) {
       return c.json(
         { error: "No hay campos válidos (use 'activo' y/o 'promo')." },
-        400
+        400,
       );
     }
 
     // Traer el actual para mergear si es objeto
     const doc = await Product.findOne(
       { Codigo: codigo },
-      { PromoCatalogo: 1 }
+      { PromoCatalogo: 1 },
     ).lean();
 
     // Normalizar base
@@ -975,7 +1029,7 @@ productsRoute.patch(
     // Escribir el objeto completo (evita el error de subcampo sobre boolean)
     const res = await Product.updateOne(
       { Codigo: codigo },
-      { $set: { PromoCatalogo: nuevo } }
+      { $set: { PromoCatalogo: nuevo } },
     );
 
     return c.json({
@@ -985,7 +1039,7 @@ productsRoute.patch(
       matched: (res as any).matchedCount ?? 0,
       modified: (res as any).modifiedCount ?? 0,
     });
-  }
+  },
 );
 
 // POST /products/promo-catalogo/bulk
@@ -1003,7 +1057,7 @@ productsRoute.post("/promo-catalogo/bulk", authMiddleware(true), async (c) => {
   if (!items.length) {
     return c.json(
       { error: "Debe enviar 'items' o 'text' con código y promo." },
-      400
+      400,
     );
   }
 
@@ -1077,7 +1131,7 @@ productsRoute.get("/catalogo/:codFami", async (c) => {
 
     // Soporta múltiples familias en el path, e ignora '*' o 'all'
     const famis = toUpperArr(
-      csv(decodeSafe(codFamiParam)).filter((x) => x !== "*" && x !== "ALL")
+      csv(decodeSafe(codFamiParam)).filter((x) => x !== "*" && x !== "ALL"),
     );
 
     // Solo bodegas 01 y 06
@@ -1087,7 +1141,7 @@ productsRoute.get("/catalogo/:codFami", async (c) => {
     // Listas sueltas (CSV)
     const grupos = csv(c.req.query("codGrupo"));
     const subgrupos = csv(
-      c.req.query("codSubGrupo") ?? c.req.query("codSubgrupo")
+      c.req.query("codSubGrupo") ?? c.req.query("codSubgrupo"),
     );
 
     // Múltiples combinaciones: 'cadenas=B-6-2;A-1  ; C--2'
@@ -1180,7 +1234,7 @@ productsRoute.get("/catalogo/:codFami", async (c) => {
             },
           },
         },
-      }
+      },
     );
 
     // Solo productos con existencia en bodegas 01 y 06
