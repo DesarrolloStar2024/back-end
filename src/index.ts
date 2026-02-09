@@ -19,22 +19,38 @@ import { couponsRoute } from "./routes/coupons.js";
 const app = new Hono();
 
 // --- Middlewares globales ---
+// --- Middlewares globales ---
+const allowedOrigins = new Set<string>([
+  "https://starprofessional.com.co",
+  "https://www.starprofessional.com.co",
+  "https://beta.starprofessional.com.co",
+  "https://pruebas.starprofessional.com.co",
+  "http://localhost:5173",
+]);
+
 app.use(
   "*",
   cors({
     origin: (origin) => {
-      const allowed = [
-        "https://beta.starprofessional.com.co",
-        "http://localhost:5173",
-        "https://www.starprofessional.com.co",
-        "https://pruebas.starprofessional.com.co",
-      ];
-
-      if (!origin) return "*"; // para requests directas desde navegador
-      return allowed.includes(origin) ? origin : null;
+      if (!origin) return undefined;
+      return allowedOrigins.has(origin) ? origin : undefined;
     },
+    credentials: true,
+    allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowHeaders: [
+      "Content-Type",
+      "Authorization",
+      "X-Requested-With",
+      "Accept",
+      "Origin",
+    ],
+    maxAge: 86400,
   })
 );
+
+// responder preflight siempre (recomendado)
+app.options("*", () => new Response(null, { status: 204 }));
+
 
 // --- Conexión a la base de datos ---
 app.use("*", async (_c, next) => {
