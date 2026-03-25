@@ -796,24 +796,21 @@ productsRoute.post("/upsert", async (c) => {
       return;
     }
 
-    // Documento final = tal cual llegó + defaults en flags si faltan
-    const finalDoc: any = {
-      ...raw,
-      PromoCatalogo: Object.prototype.hasOwnProperty.call(raw, "PromoCatalogo")
-        ? raw.PromoCatalogo
-        : false,
-      RefCatalogo: Object.prototype.hasOwnProperty.call(raw, "RefCatalogo")
-        ? raw.RefCatalogo
-        : false,
-    };
-
-    // Evitar problemas si llega _id
-    delete finalDoc._id;
+    // Construir doc sin _id ni campos protegidos del catálogo
+    const { _id: _omitId, PromoCatalogo: _omitPC, RefCatalogo: _omitRC, ...setFields } = raw as any;
 
     ops.push({
-      replaceOne: {
+      updateOne: {
         filter: { Codigo: codigo },
-        replacement: finalDoc,
+        update: {
+          // Actualiza todos los campos regulares sin tocar PromoCatalogo/RefCatalogo
+          $set: setFields,
+          // Solo aplica en documentos nuevos (upsert)
+          $setOnInsert: {
+            PromoCatalogo: false,
+            RefCatalogo: false,
+          },
+        },
         upsert: true,
       },
     });
@@ -1042,7 +1039,9 @@ productsRoute.patch(
   },
 );
 
-// POST /products/promo-catalogo/bulk
+// POST 
+
+
 productsRoute.post("/promo-catalogo/bulk", authMiddleware(true), async (c) => {
   await connectDB();
 
