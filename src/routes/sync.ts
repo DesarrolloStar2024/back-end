@@ -261,12 +261,16 @@ syncRoute.post("/full", authMiddleware(true), async (c) => {
       total += arr.length;
       acc = acc.concat(arr);
     }
-    const done = await writeProducts(acc, batchSize);
+    const { done } = await writeProducts(acc, batchSize);
     return c.json({ ok: true, scope: "full", total, done });
   } else {
     const arr = await fetchArticulos(size); // todos
     total = arr.length;
-    const done = await writeProducts(arr, batchSize);
+    const { done, syncedCodes } = await writeProducts(arr, batchSize);
+    // Limpiar descontinuados sin borrar PromoCatalogo/RefCatalogo de los activos
+    if (syncedCodes.size > 0) {
+      await Product.deleteMany({ Codigo: { $nin: Array.from(syncedCodes) } });
+    }
     return c.json({ ok: true, scope: "full", total, done });
   }
 });
@@ -383,19 +387,7 @@ syncRoute.get("/full/stream", authMiddleware(true), (c) => {
         }),
       });
 
-      // === 4) Ahora sí podemos limpiar la base ===
-      await stream.writeSSE({
-        event: "status",
-        data: JSON.stringify({
-          phase: "clean",
-          message: "Datos válidos detectados. Limpiando base de datos…",
-        }),
-      });
-
-      // 👉 BORRAR SOLO SI HAY DATOS VÁLIDOS
-      await Product.deleteMany({});
-
-      // === 5) Iniciar guardado ===
+      // === 4) Iniciar guardado ===
       await stream.writeSSE({
         event: "start",
         data: JSON.stringify({ total }),
@@ -410,7 +402,7 @@ syncRoute.get("/full/stream", authMiddleware(true), (c) => {
       });
 
       let done = 0;
-      await writeProducts(all, batchSize, async (delta) => {
+      const { syncedCodes } = await writeProducts(all, batchSize, async (delta) => {
         done += delta;
         const percent = total ? Math.round((done / total) * 100) : 100;
 
@@ -419,6 +411,12 @@ syncRoute.get("/full/stream", authMiddleware(true), (c) => {
           data: JSON.stringify({ done, total, percent }),
         });
       });
+
+      // Eliminar solo productos que ya no existen en Sysplus (descontinuados)
+      // Nunca usamos deleteMany({}) para no perder PromoCatalogo/RefCatalogo
+      if (syncedCodes.size > 0) {
+        await Product.deleteMany({ Codigo: { $nin: Array.from(syncedCodes) } });
+      }
 
       // === 6) Final ===
       await stream.writeSSE({

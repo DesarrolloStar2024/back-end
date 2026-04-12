@@ -15,6 +15,10 @@ import { catalogosRoute } from "./routes/catalogos.js";
 import { categoriasRoute } from "./routes/categorias.js";
 import { quotesRoute } from "./routes/quotes.js";
 import { couponsRoute } from "./routes/coupons.js";
+import { channelsRoute } from "./routes/channels.js";
+import { seedChannels } from "./db/seed/channels.js";
+import cron from "node-cron";
+import { runFullSync } from "./routes/cron-full-sync.js";
 
 const app = new Hono();
 
@@ -72,6 +76,29 @@ app.route("/categorias", categoriasRoute);
 app.get("/health", (c) => c.json({ ok: true }));
 app.route("/quotes", quotesRoute);
 app.route("/coupons", couponsRoute);
+app.route("/channels", channelsRoute);
+
+// --- Seed de canales al arrancar ---
+connectDB().then(() => seedChannels()).catch(console.error);
+
+// --- Cron: sincronización de productos a las 6am (solo entorno no-Vercel) ---
+if (!process.env.VERCEL) {
+  cron.schedule(
+    "0 6 * * *",
+    async () => {
+      console.log("[cron] Iniciando sincronización full de productos...");
+      try {
+        await connectDB();
+        const { total, done } = await runFullSync({ size: 5000, batchSize: 800 });
+        console.log(`[cron] Sincronización completada: ${done}/${total} productos`);
+      } catch (err) {
+        console.error("[cron] Error en sincronización:", err);
+      }
+    },
+    { timezone: "America/Bogota" }
+  );
+  console.log("[cron] Job de sincronización programado a las 06:00 (Bogotá)");
+}
 
 // --- Ejecución local ---
 if (!process.env.VERCEL) {

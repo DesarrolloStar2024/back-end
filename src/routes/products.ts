@@ -2,6 +2,7 @@
 import { Hono } from "hono";
 import { Product } from "../models/Product.js";
 import { Synonym } from "../models/Synonym.js";
+import { Channel, type IChannel } from "../models/Channel.js";
 import { connectDB } from "../config/index.js";
 import {
   ES_COLLATION,
@@ -157,9 +158,22 @@ productsRoute.get("/", async (c) => {
   const excludeCodigo = c.req.query("exclude");
 
   // stands/bodegas usados para stock y filtro
-  const bodegas = csv(c.req.query("bodegas")).length
-    ? csv(c.req.query("bodegas"))
-    : ["01", "06"];
+  const explicitBodegas = csv(c.req.query("bodegas"));
+  let bodegas = explicitBodegas.length ? explicitBodegas : ["01", "06"];
+
+  // Resolver canal: si viene channelId, sobreescribe bodegas
+  const channelId = c.req.query("channelId");
+  if (channelId) {
+    try {
+      const channel = (await Channel.findById(channelId).lean()) as IChannel | null;
+      if (channel && !explicitBodegas.length) {
+        bodegas = channel.bodegas;
+      }
+    } catch {
+      // ID inválido — se ignora y se usan los defaults
+    }
+  }
+
   const stands = csv(c.req.query("stands")); // ej: stands=3H,2B
 
   // --------- Construir $match base (campos directos) ----------
@@ -429,45 +443,17 @@ productsRoute.get("/", async (c) => {
           },
         ]
       : []),
-    // 3) Sumas específicas por bodega y total 01+06
-    {
-      $addFields: {
-        Bodega01: {
-          $sum: {
-            $map: {
-              input: {
-                $filter: {
-                  input: "$ExistenciasFiltradas",
-                  as: "ex",
-                  cond: { $eq: ["$$ex.Bodega", "01"] },
-                },
-              },
-              as: "ex2",
-              in: { $toDouble: { $ifNull: ["$$ex2.Existencia", "0"] } },
-            },
-          },
-        },
-        Bodega06: {
-          $sum: {
-            $map: {
-              input: {
-                $filter: {
-                  input: "$ExistenciasFiltradas",
-                  as: "ex",
-                  cond: { $eq: ["$$ex.Bodega", "06"] },
-                },
-              },
-              as: "ex2",
-              in: { $toDouble: { $ifNull: ["$$ex2.Existencia", "0"] } },
-            },
-          },
-        },
-      },
-    },
+    // 3) Total de existencias en las bodegas del canal (dinámico)
     {
       $addFields: {
         TotalExist: {
-          $add: [{ $ifNull: ["$Bodega01", 0] }, { $ifNull: ["$Bodega06", 0] }],
+          $sum: {
+            $map: {
+              input: { $ifNull: ["$ExistenciasFiltradas", []] },
+              as: "ex",
+              in: { $toDouble: { $ifNull: ["$$ex.Existencia", "0"] } },
+            },
+          },
         },
       },
     },
@@ -500,6 +486,11 @@ productsRoute.get("/", async (c) => {
       },
     });
   }
+
+  // PrecioCanal = Precio (nivel fijo, sin configuración por canal)
+  pipeline.push({
+    $addFields: { PrecioCanal: { $ifNull: ["$Precio", ""] } },
+  });
 
   // Stock público/agotado/all y <= maxExist
   if (stock === "public") {
@@ -580,9 +571,15 @@ productsRoute.get("/:codigo/suggest", async (c) => {
           .map((x) => x.trim())
           .filter(Boolean)
       : [];
-  const bodegas = csv(c.req.query("bodegas")).length
-    ? csv(c.req.query("bodegas"))
-    : ["01", "06"];
+  const explicitBodegas = csv(c.req.query("bodegas"));
+  let bodegas = explicitBodegas.length ? explicitBodegas : ["01", "06"];
+  const channelIdSuggest = c.req.query("channelId");
+  if (channelIdSuggest && !explicitBodegas.length) {
+    try {
+      const ch = (await Channel.findById(channelIdSuggest).lean()) as IChannel | null;
+      if (ch?.bodegas?.length) bodegas = ch.bodegas;
+    } catch { /* ID inválido */ }
+  }
   const stands = csv(c.req.query("stands"));
 
   // 1) Traer el producto base
@@ -768,6 +765,24 @@ productsRoute.get("/:codigo", async (c) => {
   const codigo = c.req.param("codigo");
   const p = await Product.findOne({ Codigo: codigo }).lean();
   if (!p) return c.json({ message: "No encontrado" }, 404);
+
+  // Si llega channelId, calcula TotalExist para las bodegas del canal
+  const channelId = c.req.query("channelId");
+  if (channelId && Array.isArray((p as any).Existencias)) {
+    try {
+      const ch = (await Channel.findById(channelId).lean()) as IChannel | null;
+      const bodegas = ch?.bodegas?.length ? ch.bodegas : ["01", "06"];
+      const TotalExist = ((p as any).Existencias as any[]).reduce(
+        (sum: number, e: any) =>
+          bodegas.includes(e.Bodega)
+            ? sum + parseFloat(e.Existencia || "0")
+            : sum,
+        0
+      );
+      return c.json({ ...p, TotalExist });
+    } catch { /* ID inválido, retorna sin TotalExist */ }
+  }
+
   return c.json(p);
 });
 
@@ -1133,8 +1148,15 @@ productsRoute.get("/catalogo/:codFami", async (c) => {
       csv(decodeSafe(codFamiParam)).filter((x) => x !== "*" && x !== "ALL"),
     );
 
-    // Solo bodegas 01 y 06
-    const bodegas = ["01", "06"];
+    // Bodegas dinámicas: desde channelId si se provee, si no default 01+06
+    const channelIdCat = c.req.query("channelId");
+    let bodegas: string[] = ["01", "06"];
+    if (channelIdCat) {
+      try {
+        const ch = (await Channel.findById(channelIdCat).lean()) as IChannel | null;
+        if (ch?.bodegas?.length) bodegas = ch.bodegas;
+      } catch { /* ID inválido */ }
+    }
     const stands: string[] = [];
 
     // Listas sueltas (CSV)

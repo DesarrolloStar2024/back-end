@@ -17,6 +17,10 @@ dist/
 .env
 .env.production
 
+.claude
+.agents
+.skills-lock.json
+
 # logs
 logs/
 *.log

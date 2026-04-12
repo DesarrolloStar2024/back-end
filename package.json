@@ -12,10 +12,12 @@
     "dotenv": "^17.2.2",
     "hono": "^4.9.4",
     "mongoose": "^8.18.0",
+    "node-cron": "^4.2.1",
     "zod": "^4.1.12"
   },
   "devDependencies": {
     "@types/node": "^20.11.17",
+    "@types/node-cron": "^3.0.11",
     "tsx": "^4.7.1",
     "typescript": "^5.8.3"
   }
