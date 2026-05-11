@@ -16,6 +16,7 @@ import { categoriasRoute } from "./routes/categorias.js";
 import { quotesRoute } from "./routes/quotes.js";
 import { couponsRoute } from "./routes/coupons.js";
 import { channelsRoute } from "./routes/channels.js";
+import { sitemapRoute } from "./routes/sitemap.js";
 import { seedChannels } from "./db/seed/channels.js";
 import cron from "node-cron";
 import { runFullSync } from "./routes/cron-full-sync.js";
@@ -56,12 +57,6 @@ app.use(
 app.options("*", () => new Response(null, { status: 204 }));
 
 
-// --- Conexión a la base de datos ---
-app.use("*", async (_c, next) => {
-  await connectDB();
-  return next();
-});
-
 // --- Rutas principales ---
 app.get("/", (c) => c.text("🚀 API de Star Profesional funcionando"));
 app.route("/products", productsRoute);
@@ -77,9 +72,20 @@ app.get("/health", (c) => c.json({ ok: true }));
 app.route("/quotes", quotesRoute);
 app.route("/coupons", couponsRoute);
 app.route("/channels", channelsRoute);
+app.route("/sitemap.xml", sitemapRoute);
 
-// --- Seed de canales al arrancar ---
-connectDB().then(() => seedChannels()).catch(console.error);
+// --- Arranque: conectar a DB una sola vez, luego seed y servidor ---
+async function bootstrap() {
+  try {
+    await connectDB();
+  } catch (err) {
+    console.error("⚠️  No se pudo conectar a MongoDB al arrancar. Se reintentará en las requests.");
+  }
+  // Seed de canales (solo si la DB ya conectó)
+  try { await seedChannels(); } catch (e) { console.error("Seed error:", e); }
+}
+
+bootstrap();
 
 // --- Cron: sincronización de productos a las 6am (solo entorno no-Vercel) ---
 if (!process.env.VERCEL) {

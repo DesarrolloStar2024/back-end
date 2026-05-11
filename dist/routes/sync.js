@@ -6,7 +6,7 @@ import { streamSSE } from "hono/streaming";
 import { authMiddleware } from "../middleware/auth.js";
 export const syncRoute = new Hono();
 // ====== CONFIG FUENTE REMOTA ======
-const SOURCE_BASE = process.env.SOURCE_BASE ?? "http://190.60.237.164";
+const SOURCE_BASE = process.env.SOURCE_BASE;
 // ====== HELPERS ======
 const chunk = (arr, size) => {
     const out = [];
@@ -122,12 +122,14 @@ async function fetchExistencias(buscar, fecha, unidad = true) {
 // ====== CORE WRITERS ======
 async function writeProducts(products, batchSize, onProgress) {
     let done = 0;
+    const syncedCodes = new Set();
     for (const group of chunk(products, batchSize)) {
         const ops = group
             .map((r) => {
             const p = normalizeProduct(r);
             if (!p.Codigo)
                 return null;
+            syncedCodes.add(p.Codigo);
             return {
                 updateOne: {
                     filter: { Codigo: p.Codigo },
@@ -143,7 +145,7 @@ async function writeProducts(products, batchSize, onProgress) {
         done += group.length;
         onProgress?.(group.length);
     }
-    return done;
+    return { done, syncedCodes };
 }
 async function writePrices(items, batchSize, onProgress) {
     let done = 0;
@@ -213,7 +215,7 @@ async function writeStocks(items, batchSize, onProgress) {
 // ====== ENDPOINTS SIN STREAM (POST) ======
 // Full: todo el body. Opcional: codes[], size, batchSize
 syncRoute.post("/full", authMiddleware(true), async (c) => {
-    const { codes, size = 3000, batchSize = 800, } = await c.req.json().catch(() => ({}));
+    const { codes, size = 5000, batchSize = 800, } = await c.req.json().catch(() => ({}));
     let total = 0;
     if (Array.isArray(codes) && codes.length) {
         let acc = [];
@@ -222,13 +224,17 @@ syncRoute.post("/full", authMiddleware(true), async (c) => {
             total += arr.length;
             acc = acc.concat(arr);
         }
-        const done = await writeProducts(acc, batchSize);
+        const { done } = await writeProducts(acc, batchSize);
         return c.json({ ok: true, scope: "full", total, done });
     }
     else {
         const arr = await fetchArticulos(size); // todos
         total = arr.length;
-        const done = await writeProducts(arr, batchSize);
+        const { done, syncedCodes } = await writeProducts(arr, batchSize);
+        // Limpiar descontinuados sin borrar PromoCatalogo/RefCatalogo de los activos
+        if (syncedCodes.size > 0) {
+            await Product.deleteMany({ Codigo: { $nin: Array.from(syncedCodes) } });
+        }
         return c.json({ ok: true, scope: "full", total, done });
     }
 });
@@ -271,10 +277,8 @@ syncRoute.post("/stock", authMiddleware(true), async (c) => {
     return c.json({ ok: true, scope: "stock", total, done });
 });
 // ====== ENDPOINTS CON PROGRESO SSE (GET) ======
-// Frontend: EventSource('/sync/full/stream?size=3000&codes=314BP,ABC&batchSize=800')
-// /sync/full/stream
 syncRoute.get("/full/stream", authMiddleware(true), (c) => {
-    const size = Number(c.req.query("size") ?? "3000");
+    const size = Number(c.req.query("size") ?? "15000");
     const batchSize = Number(c.req.query("batchSize") ?? "800");
     const codes = (c.req.query("codes") ?? "")
         .split(",")
@@ -282,7 +286,7 @@ syncRoute.get("/full/stream", authMiddleware(true), (c) => {
         .filter(Boolean);
     return streamSSE(c, async (stream) => {
         try {
-            // 1) avisar al front de inmediato
+            // === 1) Avisamos que vamos a extraer datos ===
             await stream.writeSSE({
                 event: "status",
                 data: JSON.stringify({
@@ -290,7 +294,7 @@ syncRoute.get("/full/stream", authMiddleware(true), (c) => {
                     message: "Extrayendo datos de Sysplus…",
                 }),
             });
-            // 2) descargar (ahora dentro del stream)
+            // === 2) Descargamos datos de Sysplus ===
             let all = [];
             if (codes.length) {
                 for (const code of codes) {
@@ -301,15 +305,35 @@ syncRoute.get("/full/stream", authMiddleware(true), (c) => {
             else {
                 all = await fetchArticulos(size);
             }
+            // === 3) Validar respuesta de Sysplus ===
+            if (!all || all.length === 0) {
+                await stream.writeSSE({
+                    event: "status",
+                    data: JSON.stringify({
+                        phase: "error",
+                        message: "Sysplus no respondió o devolvió 0 productos. No se aplicaron cambios.",
+                    }),
+                });
+                await stream.writeSSE({
+                    event: "done",
+                    data: JSON.stringify({
+                        done: 0,
+                        total: 0,
+                        percent: 0,
+                        aborted: true,
+                    }),
+                });
+                return;
+            }
             const total = all.length;
             await stream.writeSSE({
                 event: "status",
                 data: JSON.stringify({
                     phase: "counted",
-                    message: `Descarga completa. ${total} registros.`,
+                    message: `Descarga completa. ${total} registros recibidos.`,
                 }),
             });
-            // 3) anunciar el total y procesar
+            // === 4) Iniciar guardado ===
             await stream.writeSSE({
                 event: "start",
                 data: JSON.stringify({ total }),
@@ -318,11 +342,11 @@ syncRoute.get("/full/stream", authMiddleware(true), (c) => {
                 event: "status",
                 data: JSON.stringify({
                     phase: "write",
-                    message: "Procesando y guardando en base de datos…",
+                    message: "Procesando y guardando nuevos productos…",
                 }),
             });
             let done = 0;
-            await writeProducts(all, batchSize, async (delta) => {
+            const { syncedCodes } = await writeProducts(all, batchSize, async (delta) => {
                 done += delta;
                 const percent = total ? Math.round((done / total) * 100) : 100;
                 await stream.writeSSE({
@@ -330,6 +354,12 @@ syncRoute.get("/full/stream", authMiddleware(true), (c) => {
                     data: JSON.stringify({ done, total, percent }),
                 });
             });
+            // Eliminar solo productos que ya no existen en Sysplus (descontinuados)
+            // Nunca usamos deleteMany({}) para no perder PromoCatalogo/RefCatalogo
+            if (syncedCodes.size > 0) {
+                await Product.deleteMany({ Codigo: { $nin: Array.from(syncedCodes) } });
+            }
+            // === 6) Final ===
             await stream.writeSSE({
                 event: "status",
                 data: JSON.stringify({
@@ -339,7 +369,12 @@ syncRoute.get("/full/stream", authMiddleware(true), (c) => {
             });
             await stream.writeSSE({
                 event: "done",
-                data: JSON.stringify({ done, total, percent: 100 }),
+                data: JSON.stringify({
+                    done,
+                    total,
+                    percent: 100,
+                    aborted: false,
+                }),
             });
         }
         catch (err) {

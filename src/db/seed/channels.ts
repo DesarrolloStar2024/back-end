@@ -12,11 +12,13 @@ export async function seedChannels(): Promise<void> {
       name: "StarProfesional",
       slug: "star-profesional",
       bodegas: ["01", "06"],
+      marcas: [],
     },
     {
       name: "StarBoutique",
       slug: "star-boutique",
       bodegas: ["03"],
+      marcas: [],
     },
   ]);
 

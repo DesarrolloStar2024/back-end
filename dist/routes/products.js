@@ -2,10 +2,67 @@
 import { Hono } from "hono";
 import { Product } from "../models/Product.js";
 import { Synonym } from "../models/Synonym.js";
+import { Channel } from "../models/Channel.js";
 import { connectDB } from "../config/index.js";
 import { ES_COLLATION, toTokens, parseCadena, parseBoolish, expandWithSynonyms, buildOrRegex, } from "../utils/search.js";
 import { authMiddleware } from "../middleware/auth.js";
 export const productsRoute = new Hono();
+// === Helpers de búsqueda acento-insensible ===
+const escapeRx = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+// Mapea caracteres a clases con acentos (para tokens y frases)
+const charMap = {
+    a: "[aáàäâAÁÀÄÂ]",
+    e: "[eéèëêEÉÈËÊ]",
+    i: "[iíìïîIÍÌÏÎ]",
+    o: "[oóòöôOÓÒÖÔ]",
+    u: "[uúùüûUÚÙÜÛ]",
+    n: "[nñNÑ]",
+};
+const accentify = (s) => [...s].map((ch) => charMap[ch.toLowerCase()] ?? escapeRx(ch)).join("");
+// Regex para **frases completas** (espacios flexibles)
+const rxPhrase = (phrase) => {
+    const parts = phrase.trim().split(/\s+/g);
+    // Entre palabras acepta uno o más espacios (o puntuación mínima)
+    const joined = parts.map((p) => accentify(p)).join("\\s+");
+    return new RegExp(joined, "i");
+};
+// Regex para **token** (palabra suelta)
+const rxToken = (tok) => new RegExp(accentify(tok.trim()), "i");
+// Quita duplicados case/diacrítico-insensible
+const uniqCi = (arr) => {
+    const seen = new Set();
+    const norm = (s) => s
+        .normalize("NFD")
+        .replace(/\p{Diacritic}/gu, "")
+        .toLowerCase()
+        .trim();
+    return arr.filter((s) => {
+        const k = norm(s);
+        if (seen.has(k))
+            return false;
+        seen.add(k);
+        return true;
+    });
+};
+// Busca sinónimos **bidireccionalmente** en tu colección Synonym
+// Estructura esperada del doc: { term: string, synonyms: string[] }
+async function getPhraseVariantsBidirectional(base) {
+    const rxeq = rxPhrase(base); // acento-insensible
+    const docs = await Synonym.find({
+        $or: [
+            { term: { $regex: rxeq } },
+            { synonyms: { $elemMatch: { $regex: rxeq } } },
+        ],
+    }).lean();
+    const variants = [
+        base,
+        ...docs.flatMap((d) => [d.term, ...(d.synonyms || [])]),
+    ];
+    // Limita para no explotar el $or si hay muchísimos sinónimos
+    return uniqCi(variants).slice(0, 12);
+}
+// Convierte frase → tokens (usa tu toTokens)
+const tokensFrom = (s) => toTokens(String(s ?? "").trim()).filter(Boolean);
 // routes/products.ts (sustituye el GET "/" por esta versión)
 productsRoute.get("/", async (c) => {
     await connectDB();
@@ -33,6 +90,7 @@ productsRoute.get("/", async (c) => {
     // Búsqueda flexible (alias buscar/q)
     const buscar = c.req.query("buscar") || "";
     const q = (c.req.query("q") || buscar || "").trim();
+    const title = c.req.query("title") || "";
     // Jerarquía (A21 / A-2-1 o separados)
     const descripcion = c.req.query("descripcion");
     const codigo = c.req.query("codigo");
@@ -67,12 +125,56 @@ productsRoute.get("/", async (c) => {
     // excluir un Código concreto (antes ExcludedCodigo)
     const excludeCodigo = c.req.query("exclude");
     // stands/bodegas usados para stock y filtro
-    const bodegas = csv(c.req.query("bodegas")).length
-        ? csv(c.req.query("bodegas"))
-        : ["01", "06"];
+    const explicitBodegas = csv(c.req.query("bodegas"));
+    let bodegas = explicitBodegas.length ? explicitBodegas : ["01", "06"];
+    // Resolver canal: si viene channelId, sobreescribe bodegas
+    const channelId = c.req.query("channelId");
+    let channelMarcas = null;
+    if (channelId) {
+        try {
+            const channel = (await Channel.findById(channelId).lean());
+            if (channel) {
+                if (!explicitBodegas.length)
+                    bodegas = channel.bodegas;
+                channelMarcas = channel.marcas ?? [];
+            }
+        }
+        catch {
+            // ID inválido — se ignora y se usan los defaults
+        }
+    }
     const stands = csv(c.req.query("stands")); // ej: stands=3H,2B
     // --------- Construir $match base (campos directos) ----------
     const baseAnd = [];
+    if (channelMarcas !== null) {
+        baseAnd.push({ Fabricante: { $in: channelMarcas } });
+    }
+    const escapeRegex = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    if (title) {
+        const raw = title.trim();
+        const safe = escapeRegex(raw);
+        const digits = raw.replace(/\D/g, "");
+        const safeDigits = escapeRegex(digits);
+        baseAnd.push({
+            $or: [
+                // Texto (ok)
+                { Descripcion: { $regex: safe, $options: "i" } },
+                // Código: prefijo + contains
+                { Codigo: { $regex: `^${safe}`, $options: "i" } },
+                { Codigo: { $regex: safe, $options: "i" } }, // <- FIX: "4513" encuentra "BQY4513"
+                // Barras (si aplica)
+                { Barras: { $regex: `^${safe}`, $options: "i" } },
+                { Barras: { $regex: safe, $options: "i" } },
+                // Si el input tiene dígitos, búscalos dentro del código/barras
+                ...(digits.length >= 3
+                    ? [
+                        { Codigo: { $regex: safeDigits, $options: "i" } },
+                        { Barras: { $regex: safeDigits, $options: "i" } },
+                    ]
+                    : []),
+            ],
+        });
+    }
     // Cadena A-2-1 / A21
     // Aplica los filtros SOLO si todos los valores están presentes
     // Aplica los filtros SOLO si todos los valores están presentes
@@ -113,7 +215,7 @@ productsRoute.get("/", async (c) => {
     const fabricanteId = c.req.query("fabricanteId");
     // --- Helpers separados (ID vs Nombre) ---
     function byMarcaIdStrict(id) {
-        return { Marca: id };
+        return { NomMarca: id };
     }
     function byFabricanteIdStrict(id) {
         return { Fabricante: id };
@@ -177,12 +279,80 @@ productsRoute.get("/", async (c) => {
         baseAnd.push({ RefCatalogo: refCatalogoBool });
     if (descripcion)
         baseAnd.push({ Descripcion: { $regex: new RegExp(descripcion, "i") } });
-    // Búsqueda flexible con sinónimos + exact match en Codigo/Barras
+    const normalizeCodeLike = (s) => String(s ?? "")
+        .trim()
+        .replace(/\s+/g, "") // quita espacios
+        .replace(/[-_./]/g, "") // quita separadores comunes
+        .toUpperCase();
+    const rxContainsCi = (s) => new RegExp(escapeRegex(s), "i");
+    const rxStartsCi = (s) => new RegExp("^" + escapeRegex(s), "i");
     if (q) {
-        const tokens = toTokens(q);
-        const expanded = await expandWithSynonyms(tokens, Synonym);
-        const orRegex = buildOrRegex(["Descripcion", "NomMarca", "Nomfabricante", "Codigo", "Barras"], expanded.length ? expanded : tokens);
-        baseAnd.push({ $or: [{ Codigo: q }, { Barras: q }, ...orRegex.$or] });
+        const decodeQuerySafe = (v) => {
+            let s = String(v ?? "").replace(/\+/g, "%20");
+            for (let i = 0; i < 2; i++) {
+                try {
+                    const d = decodeURIComponent(s);
+                    if (d === s)
+                        break;
+                    s = d;
+                }
+                catch {
+                    break;
+                }
+            }
+            return s;
+        };
+        const stripRepeats = (s) => s.replace(/(.)\1{2,}/g, "$1$1");
+        const baseRaw = stripRepeats(decodeQuerySafe(q)).trim();
+        const base = baseRaw; // mantengo tu variable
+        if (base) {
+            const baseUpper = base.toUpperCase();
+            const digits = base.replace(/\D/g, "");
+            const baseCodeNorm = normalizeCodeLike(base);
+            const digitsNorm = normalizeCodeLike(digits);
+            const phraseVariants = await getPhraseVariantsBidirectional(base);
+            const baseTokens = tokensFrom(base);
+            const expandedTokenList = await expandWithSynonyms(baseTokens, Synonym);
+            const tokenVariantsSets = uniqCi([
+                baseTokens.join(" "),
+                ...phraseVariants.map((v) => tokensFrom(v).join(" ")),
+                expandedTokenList.join(" "),
+            ])
+                .map((s) => s.split(/\s+/g).filter(Boolean))
+                .filter((set) => set.length > 0)
+                .slice(0, 16);
+            const TEXT_FIELDS = ["Descripcion", "NomMarca", "Nomfabricante"];
+            const or = [];
+            // 1) Exactos (como ya tenías), pero normalizando para códigos comunes
+            or.push({ Codigo: base }, { Codigo: baseUpper }, { Barras: base }, { Codigo: baseCodeNorm }, // <- útil si en BD guardan sin separadores
+            { Barras: baseCodeNorm });
+            // 2) PARTIAL para Código/Barras (aquí está el fix para "4513" -> "BQY4513")
+            // Prioriza startsWith (mejor chance de usar índice) y luego contains
+            if (baseCodeNorm.length >= 2) {
+                or.push({ Codigo: { $regex: rxStartsCi(baseCodeNorm) } }, { Codigo: { $regex: rxContainsCi(baseCodeNorm) } }, { Barras: { $regex: rxStartsCi(baseCodeNorm) } }, { Barras: { $regex: rxContainsCi(baseCodeNorm) } });
+            }
+            // 3) Si tiene dígitos, busca esos dígitos dentro del Código/Barras
+            // (esto resuelve específicamente el caso: buscar "4513" y encontrar "BQY4513")
+            if (digits.length >= 3) {
+                or.push({ Codigo: { $regex: rxContainsCi(digitsNorm) } }, { Barras: { $regex: rxContainsCi(digitsNorm) } });
+            }
+            // 4) Frase completa (texto)
+            for (const phrase of phraseVariants) {
+                const rx = rxPhrase(phrase);
+                for (const f of TEXT_FIELDS) {
+                    or.push({ [f]: { $regex: rx } });
+                }
+            }
+            // 5) AND de tokens (texto)
+            for (const set of tokenVariantsSets) {
+                for (const f of TEXT_FIELDS) {
+                    or.push({
+                        $and: set.map((tok) => ({ [f]: { $regex: rxToken(tok) } })),
+                    });
+                }
+            }
+            baseAnd.push({ $or: or });
+        }
     }
     if (excludeCodigo)
         baseAnd.push({ Codigo: { $ne: excludeCodigo } });
@@ -192,25 +362,41 @@ productsRoute.get("/", async (c) => {
         pipeline.push({ $match: { $and: baseAnd } });
     // ⇒ Calculamos totalExist en las bodegas seleccionadas, y stands coincidentes
     pipeline.push(
-    // filtra existencias a bodegas elegidas
+    // 1) Filtra a las bodegas elegidas (por default ["01","06"])
     {
         $addFields: {
             ExistenciasFiltradas: {
                 $filter: {
                     input: { $ifNull: ["$Existencias", []] },
                     as: "ex",
-                    cond: { $in: ["$$ex.Bodega", bodegas] },
+                    cond: { $in: ["$$ex.Bodega", bodegas] }, // p.ej. ["01","06"]
                 },
             },
         },
     }, 
-    // suma de existencias numéricas
+    // 2) Si hay stands seleccionados, volvemos a filtrar la lista
+    ...(stands.length
+        ? [
+            {
+                $addFields: {
+                    ExistenciasFiltradas: {
+                        $filter: {
+                            input: "$ExistenciasFiltradas",
+                            as: "ex",
+                            cond: { $in: ["$$ex.Stand", stands] },
+                        },
+                    },
+                },
+            },
+        ]
+        : []), 
+    // 3) Total de existencias en las bodegas del canal (dinámico)
     {
         $addFields: {
             TotalExist: {
                 $sum: {
                     $map: {
-                        input: "$ExistenciasFiltradas",
+                        input: { $ifNull: ["$ExistenciasFiltradas", []] },
                         as: "ex",
                         in: { $toDouble: { $ifNull: ["$$ex.Existencia", "0"] } },
                     },
@@ -241,6 +427,10 @@ productsRoute.get("/", async (c) => {
             },
         });
     }
+    // PrecioCanal = Precio (nivel fijo, sin configuración por canal)
+    pipeline.push({
+        $addFields: { PrecioCanal: { $ifNull: ["$Precio", ""] } },
+    });
     // Stock público/agotado/all y <= maxExist
     if (stock === "public") {
         pipeline.push({ $match: { $expr: { $gt: ["$TotalExist", 0] } } });
@@ -269,8 +459,16 @@ productsRoute.get("/", async (c) => {
             },
         });
     }
-    // Orden alfabético SIEMPRE
-    pipeline.push({ $sort: { Descripcion: 1 } });
+    // Ordenar por existencia total (01+06) o por nombre (ambos con asc/desc)
+    const order = (c.req.query("order") || "alpha").toLowerCase(); // 'alpha' | 'total'
+    const dir = (c.req.query("dir") || (order === "alpha" ? "asc" : "desc")).toLowerCase();
+    const sortDir = dir === "asc" ? 1 : -1;
+    if (order === "total") {
+        pipeline.push({ $sort: { TotalExist: sortDir, Descripcion: 1 } }); // desempate por nombre asc
+    }
+    else {
+        pipeline.push({ $sort: { Descripcion: sortDir } });
+    }
     // Paginado con facet
     pipeline.push({
         $facet: {
@@ -300,9 +498,17 @@ productsRoute.get("/:codigo/suggest", async (c) => {
             .map((x) => x.trim())
             .filter(Boolean)
         : [];
-    const bodegas = csv(c.req.query("bodegas")).length
-        ? csv(c.req.query("bodegas"))
-        : ["01", "06"];
+    const explicitBodegas = csv(c.req.query("bodegas"));
+    let bodegas = explicitBodegas.length ? explicitBodegas : ["01", "06"];
+    const channelIdSuggest = c.req.query("channelId");
+    if (channelIdSuggest && !explicitBodegas.length) {
+        try {
+            const ch = (await Channel.findById(channelIdSuggest).lean());
+            if (ch?.bodegas?.length)
+                bodegas = ch.bodegas;
+        }
+        catch { /* ID inválido */ }
+    }
     const stands = csv(c.req.query("stands"));
     // 1) Traer el producto base
     const base = await Product.findOne({ Codigo: codigo }).lean();
@@ -319,11 +525,11 @@ productsRoute.get("/:codigo/suggest", async (c) => {
     const searchTerms = expanded.length ? expanded : baseTokens;
     // Pequeño OR-regex para coincidencias en texto (usa util existente)
     const orRegex = buildOrRegex(["Descripcion", "NomMarca", "Nomfabricante"], searchTerms);
-    const baseFami = !Array.isArray(base) ? base.CodFami ?? null : null;
-    const baseGrupo = !Array.isArray(base) ? base.CodGrupo ?? null : null;
-    const baseSub = !Array.isArray(base) ? base.CodSubgrupo ?? null : null;
-    const baseMarca = !Array.isArray(base) ? base.Marca ?? null : null;
-    const baseFab = !Array.isArray(base) ? base.Fabricante ?? null : null;
+    const baseFami = !Array.isArray(base) ? (base.CodFami ?? null) : null;
+    const baseGrupo = !Array.isArray(base) ? (base.CodGrupo ?? null) : null;
+    const baseSub = !Array.isArray(base) ? (base.CodSubgrupo ?? null) : null;
+    const baseMarca = !Array.isArray(base) ? (base.Marca ?? null) : null;
+    const baseFab = !Array.isArray(base) ? (base.Fabricante ?? null) : null;
     // Precio base para proximidad (usa PVP, o Precio si no hay)
     const basePrice = base && typeof base === "object" && !Array.isArray(base)
         ? Number(base.Precio ?? 0) || 0
@@ -469,6 +675,19 @@ productsRoute.get("/:codigo", async (c) => {
     const p = await Product.findOne({ Codigo: codigo }).lean();
     if (!p)
         return c.json({ message: "No encontrado" }, 404);
+    // Si llega channelId, calcula TotalExist para las bodegas del canal
+    const channelId = c.req.query("channelId");
+    if (channelId && Array.isArray(p.Existencias)) {
+        try {
+            const ch = (await Channel.findById(channelId).lean());
+            const bodegas = ch?.bodegas?.length ? ch.bodegas : ["01", "06"];
+            const TotalExist = p.Existencias.reduce((sum, e) => bodegas.includes(e.Bodega)
+                ? sum + parseFloat(e.Existencia || "0")
+                : sum, 0);
+            return c.json({ ...p, TotalExist });
+        }
+        catch { /* ID inválido, retorna sin TotalExist */ }
+    }
     return c.json(p);
 });
 // --- UPSERT MASIVO DE PRODUCTOS ---
@@ -492,22 +711,20 @@ productsRoute.post("/upsert", async (c) => {
             errors.push({ index: i, reason: "Falta 'Codigo'" });
             return;
         }
-        // Documento final = tal cual llegó + defaults en flags si faltan
-        const finalDoc = {
-            ...raw,
-            PromoCatalogo: Object.prototype.hasOwnProperty.call(raw, "PromoCatalogo")
-                ? raw.PromoCatalogo
-                : false,
-            RefCatalogo: Object.prototype.hasOwnProperty.call(raw, "RefCatalogo")
-                ? raw.RefCatalogo
-                : false,
-        };
-        // Evitar problemas si llega _id
-        delete finalDoc._id;
+        // Construir doc sin _id ni campos protegidos del catálogo
+        const { _id: _omitId, PromoCatalogo: _omitPC, RefCatalogo: _omitRC, ...setFields } = raw;
         ops.push({
-            replaceOne: {
+            updateOne: {
                 filter: { Codigo: codigo },
-                replacement: finalDoc,
+                update: {
+                    // Actualiza todos los campos regulares sin tocar PromoCatalogo/RefCatalogo
+                    $set: setFields,
+                    // Solo aplica en documentos nuevos (upsert)
+                    $setOnInsert: {
+                        PromoCatalogo: false,
+                        RefCatalogo: false,
+                    },
+                },
                 upsert: true,
             },
         });
@@ -636,7 +853,6 @@ productsRoute.post("/ref-catalogo/bulk", authMiddleware(true), async (c) => {
 productsRoute.patch("/:codigo/promo-catalogo", authMiddleware(true), async (c) => {
     await connectDB();
     const codigo = c.req.param("codigo");
-    console.log("PATCH /products/:codigo/promo-catalogo", codigo);
     let body;
     try {
         body = await c.req.json();
@@ -678,7 +894,7 @@ productsRoute.patch("/:codigo/promo-catalogo", authMiddleware(true), async (c) =
         modified: res.modifiedCount ?? 0,
     });
 });
-// POST /products/promo-catalogo/bulk
+// POST 
 productsRoute.post("/promo-catalogo/bulk", authMiddleware(true), async (c) => {
     await connectDB();
     let body;
@@ -717,26 +933,161 @@ productsRoute.post("/promo-catalogo/bulk", authMiddleware(true), async (c) => {
 });
 productsRoute.get("/catalogo/:codFami", async (c) => {
     try {
-        const codFami = c.req.param("codFami");
-        const onlyAvailable = c.req.query("onlyAvailable") === "true";
-        if (!codFami) {
+        // ---------- Helpers ----------
+        const csv = (s) => (s ?? "")
+            .split(/[,\s]+/)
+            .map((x) => x.trim())
+            .filter(Boolean);
+        const decodeSafe = (v) => {
+            if (!v)
+                return "";
+            let s = String(v).replace(/\+/g, "%20");
+            for (let i = 0; i < 2; i++) {
+                try {
+                    const d = decodeURIComponent(s);
+                    if (d === s)
+                        break;
+                    s = d;
+                }
+                catch {
+                    break;
+                }
+            }
+            return s;
+        };
+        const toUpperArr = (arr) => arr.map((x) => x.toUpperCase());
+        const parseCadenaItem = (s) => {
+            // Formatos: B-6-2 | B-6 | B--2 | B
+            const [f, g, sub] = s.split(/[-_]/).map((x) => x?.trim());
+            return {
+                CodFami: f ? f.toUpperCase() : undefined,
+                CodGrupo: g ?? undefined,
+                CodSubgrupo: sub ?? undefined,
+            };
+        };
+        // ---------- Params & Query ----------
+        const codFamiParam = c.req.param("codFami"); // puede venir CSV: A,B
+        if (codFamiParam == null) {
             return c.json({ ok: false, error: "Falta parámetro codFami" }, 400);
         }
-        // 🔹 Buscar productos de la familia
-        let products = await Product.find({ CodFami: codFami })
-            .sort({ Descripcion: 1 })
-            .lean();
-        // 🔹 Si se pide solo los disponibles, filtramos por existencias > 0
-        if (onlyAvailable) {
-            products = products.filter((p) => p.Existencias?.some((e) => Number(e.Existencia ?? 0) > 0));
+        // Soporta múltiples familias en el path, e ignora '*' o 'all'
+        const famis = toUpperArr(csv(decodeSafe(codFamiParam)).filter((x) => x !== "*" && x !== "ALL"));
+        // Bodegas dinámicas: desde channelId si se provee, si no default 01+06
+        const channelIdCat = c.req.query("channelId");
+        let bodegas = ["01", "06"];
+        if (channelIdCat) {
+            try {
+                const ch = (await Channel.findById(channelIdCat).lean());
+                if (ch?.bodegas?.length)
+                    bodegas = ch.bodegas;
+            }
+            catch { /* ID inválido */ }
         }
-        // 🔹 Separar según RefCatalogo
+        const stands = [];
+        // Listas sueltas (CSV)
+        const grupos = csv(c.req.query("codGrupo"));
+        const subgrupos = csv(c.req.query("codSubGrupo") ?? c.req.query("codSubgrupo"));
+        // Múltiples combinaciones: 'cadenas=B-6-2;A-1  ; C--2'
+        const cadenasRaw = decodeSafe(c.req.query("cadenas"));
+        const cadenas = cadenasRaw
+            .split(/[;|]/)
+            .map((x) => x.trim())
+            .filter(Boolean);
+        // Una sola combinación 'cadena=B-6-2' (compatibilidad)
+        const cadenaSingle = decodeSafe(c.req.query("cadena"));
+        if (cadenaSingle)
+            cadenas.push(cadenaSingle);
+        // ---------- $match jerárquico ----------
+        const matchOr = [];
+        if (cadenas.length) {
+            // OR por cada combinación
+            for (const cad of cadenas) {
+                const { CodFami, CodGrupo, CodSubgrupo } = parseCadenaItem(cad);
+                const exprAnd = [];
+                if (CodFami)
+                    exprAnd.push({ $eq: [{ $toUpper: "$CodFami" }, CodFami] });
+                if (CodGrupo)
+                    exprAnd.push({ $eq: [{ $toString: "$CodGrupo" }, String(CodGrupo)] });
+                if (CodSubgrupo)
+                    exprAnd.push({
+                        $eq: [{ $toString: "$CodSubgrupo" }, String(CodSubgrupo)],
+                    });
+                if (exprAnd.length)
+                    matchOr.push({ $expr: { $and: exprAnd } });
+            }
+        }
+        const exprAndDims = [];
+        if (famis.length)
+            exprAndDims.push({ $in: [{ $toUpper: "$CodFami" }, famis] });
+        if (grupos.length)
+            exprAndDims.push({ $in: [{ $toString: "$CodGrupo" }, grupos] });
+        if (subgrupos.length)
+            exprAndDims.push({
+                $in: [{ $toString: "$CodSubgrupo" }, subgrupos],
+            });
+        const pipeline = [];
+        if (matchOr.length) {
+            // Si hay combinaciones, priorizamos OR de combos
+            pipeline.push({ $match: { $or: matchOr } });
+        }
+        else if (exprAndDims.length) {
+            // Si no hay combos, usamos AND por dimensión
+            pipeline.push({ $match: { $expr: { $and: exprAndDims } } });
+        }
+        else if (famis.length) {
+            // Solo familias (del path)
+            pipeline.push({
+                $match: { $expr: { $in: [{ $toUpper: "$CodFami" }, famis] } },
+            });
+        }
+        else {
+            // Si el path tenía '*' o 'all', no filtramos por familia
+            // (sin $match jerárquico)
+        }
+        // ---------- Disponibilidad por bodegas 01 y 06 ----------
+        pipeline.push({
+            $addFields: {
+                ExistenciasFiltradas: {
+                    $filter: {
+                        input: { $ifNull: ["$Existencias", []] },
+                        as: "ex",
+                        cond: {
+                            $and: [
+                                { $in: ["$$ex.Bodega", bodegas] },
+                                stands.length
+                                    ? { $in: ["$$ex.Stand", stands] }
+                                    : { $literal: true },
+                            ],
+                        },
+                    },
+                },
+            },
+        }, {
+            $addFields: {
+                TotalExist: {
+                    $sum: {
+                        $map: {
+                            input: "$ExistenciasFiltradas",
+                            as: "ex",
+                            in: { $toDouble: { $ifNull: ["$$ex.Existencia", "0"] } },
+                        },
+                    },
+                },
+            },
+        });
+        // Solo productos con existencia en bodegas 01 y 06
+        pipeline.push({ $match: { $expr: { $gt: ["$TotalExist", 0] } } });
+        // Orden alfabético
+        pipeline.push({ $sort: { Descripcion: 1 } });
+        // Ejecutar
+        const products = await Product.aggregate(pipeline).allowDiskUse(true);
+        // ---------- Mismo shape de salida ----------
         const dataRef = products.filter((p) => p.RefCatalogo === true);
         const finalData = products.filter((p) => !p.RefCatalogo);
         return c.json({
             ok: true,
-            codFami,
-            total: products.length,
+            codFami: codFamiParam, // mantenemos el campo
+            total: products.length, // igual que antes
             finalData,
             dataRef,
         });

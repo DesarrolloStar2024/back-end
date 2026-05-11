@@ -1,8 +1,8 @@
 import mongoose, { Schema, Document } from "mongoose";
 const ExistenciaSchema = new Schema({
-    Bodega: { type: String, required: true },
-    Existencia: { type: String, required: true },
-    Stand: { type: String, required: true },
+    Bodega: { type: String, required: false },
+    Existencia: { type: String, required: false },
+    Stand: { type: String, required: false },
 }, { _id: false });
 const ProductSchema = new Schema({
     Codigo: { type: String, required: true, unique: true },

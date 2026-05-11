@@ -1,5 +1,6 @@
 // src/index.ts
 import { Hono } from "hono";
+import "dotenv/config";
 import { serve } from "@hono/node-server";
 import { cors } from "hono/cors";
 import { productsRoute } from "./routes/products.js";
@@ -10,20 +11,50 @@ import { connectDB } from "./config/index.js";
 import { syncRoute } from "./routes/sync.js";
 import { authRoute } from "./routes/auth.js";
 import { sysplusRoute } from "./routes/sysplus.js";
+import { catalogosRoute } from "./routes/catalogos.js";
+import { categoriasRoute } from "./routes/categorias.js";
+import { quotesRoute } from "./routes/quotes.js";
+import { couponsRoute } from "./routes/coupons.js";
+import { channelsRoute } from "./routes/channels.js";
+import { seedChannels } from "./db/seed/channels.js";
+import cron from "node-cron";
+import { runFullSync } from "./routes/cron-full-sync.js";
 const app = new Hono();
+// --- Middlewares globales ---
+// --- Middlewares globales ---
+const allowedOrigins = new Set([
+    "https://starprofessional.com.co",
+    "https://www.starprofessional.com.co",
+    "https://beta.starprofessional.com.co",
+    "https://pruebas.starprofessional.com.co",
+    "http://localhost:5173",
+]);
 app.use("*", cors({
     origin: (origin) => {
-        if (origin === "https://importadorastar.com") {
-            return origin;
-        }
-        return null;
+        if (!origin)
+            return undefined;
+        return allowedOrigins.has(origin) ? origin : undefined;
     },
+    credentials: true,
+    allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowHeaders: [
+        "Content-Type",
+        "Authorization",
+        "X-Requested-With",
+        "Accept",
+        "Origin",
+    ],
+    maxAge: 86400,
 }));
+// responder preflight siempre (recomendado)
+app.options("*", () => new Response(null, { status: 204 }));
+// --- Conexión a la base de datos ---
 app.use("*", async (_c, next) => {
     await connectDB();
     return next();
 });
-app.get("/", (c) => c.text("API de Star Profesional funcionando 🚀"));
+// --- Rutas principales ---
+app.get("/", (c) => c.text("🚀 API de Star Profesional funcionando"));
 app.route("/products", productsRoute);
 app.route("/fabricantes", fabricantesRoute);
 app.route("/synonyms", synonymsRoute);
@@ -31,9 +62,38 @@ app.route("/superadmins", superAdminsRoute);
 app.route("/sync", syncRoute);
 app.route("/auth", authRoute);
 app.route("/sysplus", sysplusRoute);
-// Solo para local
-serve({
-    fetch: app.fetch,
-    port: 3000,
-});
-console.log("🚀 Servidor Hono corriendo en http://localhost:3000");
+app.route("/catalogos", catalogosRoute);
+app.route("/categorias", categoriasRoute);
+app.get("/health", (c) => c.json({ ok: true }));
+app.route("/quotes", quotesRoute);
+app.route("/coupons", couponsRoute);
+app.route("/channels", channelsRoute);
+// --- Seed de canales al arrancar ---
+connectDB().then(() => seedChannels()).catch(console.error);
+// --- Cron: sincronización de productos a las 6am (solo entorno no-Vercel) ---
+if (!process.env.VERCEL) {
+    cron.schedule("0 6 * * *", async () => {
+        console.log("[cron] Iniciando sincronización full de productos...");
+        try {
+            await connectDB();
+            const { total, done } = await runFullSync({ size: 5000, batchSize: 800 });
+            console.log(`[cron] Sincronización completada: ${done}/${total} productos`);
+        }
+        catch (err) {
+            console.error("[cron] Error en sincronización:", err);
+        }
+    }, { timezone: "America/Bogota" });
+    console.log("[cron] Job de sincronización programado a las 06:00 (Bogotá)");
+}
+// --- Ejecución local ---
+if (!process.env.VERCEL) {
+    const PORT = process.env.PORT || 4000;
+    serve({
+        fetch: app.fetch,
+        port: Number(PORT),
+    });
+    console.log(`🚀 Servidor local corriendo en http://localhost:${PORT}`);
+}
+// --- Export para Vercel ---
+export default app;
+//

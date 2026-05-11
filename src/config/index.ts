@@ -1,29 +1,59 @@
 // src/config/index.ts
 import mongoose from "mongoose";
 
-let isConnected = false;
+let connectionPromise: Promise<void> | null = null;
+let eventsRegistered = false;
+
+function registerMongoEvents() {
+  if (eventsRegistered) return;
+  eventsRegistered = true;
+
+  mongoose.connection.on("disconnected", () => {
+    console.warn("⚠️  MongoDB desconectado. Mongoose intentará reconectar automáticamente.");
+    connectionPromise = null; // permite que connectDB() reintente si se llama
+  });
+
+  mongoose.connection.on("reconnected", () => {
+    console.log("✅ MongoDB reconectado correctamente");
+  });
+
+  mongoose.connection.on("error", (err) => {
+    console.error("❌ Error de conexión MongoDB:", err.message);
+  });
+}
 
 export const connectDB = async () => {
-  if (isConnected) return; // evita reconectar en cada request
+  // Si mongoose ya está conectado, no hacer nada
+  if (mongoose.connection.readyState === 1) return;
 
-  try {
-    const uri = process.env.MONGODB_URI;
-    if (!uri) {
-      console.error("❌ No se encontró la variable MONGODB_URI.");
-      return;
+  // Si ya hay una conexión en curso, esperar esa misma promesa (evita race conditions)
+  if (connectionPromise) return connectionPromise;
+
+  registerMongoEvents();
+
+  connectionPromise = (async () => {
+    try {
+      const uri = process.env.MONGODB_URI;
+      if (!uri) {
+        console.error("❌ No se encontró la variable MONGODB_URI.");
+        return;
+      }
+
+      await mongoose.connect(uri, {
+        dbName: "starprofesional",
+        serverSelectionTimeoutMS: 10000,
+      });
+
+      console.log("✅ MongoDB conectado correctamente");
+      console.log(`   📡 Host: ${mongoose.connection.host}`);
+      console.log(`   🧩 Base: ${mongoose.connection.name}`);
+    } catch (error) {
+      console.error("❌ Error al conectar a MongoDB:", error);
+      // Limpiar la promesa para permitir un retry futuro
+      connectionPromise = null;
+      throw error;
     }
+  })();
 
-    const conn = await mongoose.connect(uri, {
-      dbName: "starprofesional",
-      serverSelectionTimeoutMS: 10000,
-    });
-
-    isConnected = conn.connections[0].readyState === 1;
-
-    console.log("✅ MongoDB conectado correctamente");
-    console.log("   📡 Host:", conn.connection.host);
-    console.log("   🧩 Base:", conn.connection.name);
-  } catch (error) {
-    console.error("❌ Error al conectar a MongoDB:", error);
-  }
+  return connectionPromise;
 };

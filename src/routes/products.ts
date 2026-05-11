@@ -163,11 +163,13 @@ productsRoute.get("/", async (c) => {
 
   // Resolver canal: si viene channelId, sobreescribe bodegas
   const channelId = c.req.query("channelId");
+  let channelMarcas: string[] | null = null;
   if (channelId) {
     try {
       const channel = (await Channel.findById(channelId).lean()) as IChannel | null;
-      if (channel && !explicitBodegas.length) {
-        bodegas = channel.bodegas;
+      if (channel) {
+        if (!explicitBodegas.length) bodegas = channel.bodegas;
+        channelMarcas = channel.marcas ?? [];
       }
     } catch {
       // ID inválido — se ignora y se usan los defaults
@@ -178,6 +180,10 @@ productsRoute.get("/", async (c) => {
 
   // --------- Construir $match base (campos directos) ----------
   const baseAnd: any[] = [];
+
+  if (channelMarcas !== null) {
+    baseAnd.push({ Fabricante: { $in: channelMarcas } });
+  }
 
   const escapeRegex = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
