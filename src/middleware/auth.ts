@@ -18,7 +18,7 @@ export const authMiddleware = (requireSuperAdmin = false) => {
     const token = auth.split(" ")[1];
 
     try {
-      const payload = await verify(token, JWT_SECRET);
+      const payload = await verify(token, JWT_SECRET, "HS256");
       type User = { isSuperAdmin?: boolean; [key: string]: any };
       const user: User = payload.user || {};
 
