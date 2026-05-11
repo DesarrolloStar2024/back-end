@@ -17,6 +17,7 @@ import { quotesRoute } from "./routes/quotes.js";
 import { couponsRoute } from "./routes/coupons.js";
 import { channelsRoute } from "./routes/channels.js";
 import { sitemapRoute } from "./routes/sitemap.js";
+import { docsApp } from "./routes/docs.js";
 import { seedChannels } from "./db/seed/channels.js";
 import cron from "node-cron";
 import { runFullSync } from "./routes/cron-full-sync.js";
@@ -75,6 +76,7 @@ app.route("/quotes", quotesRoute);
 app.route("/coupons", couponsRoute);
 app.route("/channels", channelsRoute);
 app.route("/sitemap.xml", sitemapRoute);
+app.route("/docs", docsApp);
 
 // --- Arranque: conectar a DB una sola vez, luego seed y servidor ---
 async function bootstrap() {
