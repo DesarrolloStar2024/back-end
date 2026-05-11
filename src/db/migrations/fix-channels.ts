@@ -6,7 +6,7 @@
  */
 import "dotenv/config";
 import mongoose from "mongoose";
-import { Channel } from "../models/Channel.js";
+import { Channel } from "../../models/Channel.js";
 
 async function migrate() {
   const uri = process.env.MONGODB_URI;
