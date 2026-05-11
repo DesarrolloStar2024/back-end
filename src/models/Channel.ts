@@ -18,7 +18,7 @@ const ChannelSchema = new Schema<IChannel>(
   { timestamps: true }
 );
 
-ChannelSchema.index({ slug: 1 }, { unique: true });
+// slug unique index already declared via `unique: true` on the field
 
 export const Channel =
   mongoose.models.Channel || mongoose.model<IChannel>("Channel", ChannelSchema);

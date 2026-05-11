@@ -8,8 +8,8 @@
   },
   "dependencies": {
     "@hono/node-server": "^1.19.0",
-    "@hono/swagger-ui": "^0.6.1",
     "@hono/zod-openapi": "^1.4.0",
+    "@scalar/hono-api-reference": "^0.9.48",
     "axios": "^1.12.2",
     "dotenv": "^17.2.2",
     "hono": "^4.9.4",

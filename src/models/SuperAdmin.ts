@@ -9,7 +9,7 @@ export interface ISuperAdmin extends Document {
 
 const SuperAdminSchema = new Schema<ISuperAdmin>(
   {
-    Id: { type: String, required: true, trim: true, index: true }, // sin unique
+    Id: { type: String, required: true, trim: true }, // sin unique
     Codigo: { type: String, required: true, trim: true, unique: true }, // único
   },
   { timestamps: true }
