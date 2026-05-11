@@ -30,6 +30,8 @@ const allowedOrigins = new Set<string>([
   "https://www.starprofessional.com.co",
   "https://beta.starprofessional.com.co",
   "https://pruebas.starprofessional.com.co",
+  "https://starboutique.com.co",
+  "https://www.starboutique.com.co",
   "http://localhost:5173",
 ]);
 
