@@ -52,8 +52,8 @@ const ProductSchema = new Schema({
     },
     RefCatalogo: { type: Boolean, default: false },
 }, { timestamps: true });
-// Índices recomendados
-ProductSchema.index({ Codigo: 1 }, { unique: true });
+// Índices recomendados (Codigo unique ya declarado en el field)
+// ProductSchema.index({ Codigo: 1 }, { unique: true }); // duplicado — ya tiene unique:true en el schema
 ProductSchema.index({ CodFami: 1, CodGrupo: 1, CodSubgrupo: 1 });
 // Como tu BDD tiene Marca/Fabricante cruzados, indexa ambos pares
 ProductSchema.index({ Marca: 1, NomMarca: 1 });

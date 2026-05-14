@@ -1,32 +1,51 @@
 // src/index.ts
-import { Hono } from "hono";
+import { OpenAPIHono } from "@hono/zod-openapi";
 import "dotenv/config";
 import { serve } from "@hono/node-server";
 import { cors } from "hono/cors";
+import { apiReference } from "@scalar/hono-api-reference";
+import { configureOpenAPI } from "./lib/open-api.js";
+// --- Rutas documentadas (OpenAPIHono) ---
+import auth from "./routes/auth/auth.index.js";
+import health from "./routes/health-doc/health.index.js";
+import channels from "./routes/channels-doc/channels.index.js";
+// --- Rutas existentes (Hono clásico, compatibles con OpenAPIHono) ---
 import { productsRoute } from "./routes/products.js";
 import { fabricantesRoute } from "./routes/fabricantes.js";
 import { synonymsRoute } from "./routes/synonym.js";
 import { superAdminsRoute } from "./routes/superadmins.js";
-import { connectDB } from "./config/index.js";
 import { syncRoute } from "./routes/sync.js";
-import { authRoute } from "./routes/auth.js";
 import { sysplusRoute } from "./routes/sysplus.js";
 import { catalogosRoute } from "./routes/catalogos.js";
 import { categoriasRoute } from "./routes/categorias.js";
 import { quotesRoute } from "./routes/quotes.js";
 import { couponsRoute } from "./routes/coupons.js";
-import { channelsRoute } from "./routes/channels.js";
+import { sitemapRoute } from "./routes/sitemap.js";
+// --- Route definitions (solo para OpenAPI spec, no manejan requests) ---
+import * as productsRoutes from "./routes/products-doc/products.routes.js";
+import * as superadminsRoutes from "./routes/superadmins-doc/superadmins.routes.js";
+import * as couponsRoutes from "./routes/coupons-doc/coupons.routes.js";
+import * as synonymsRoutes from "./routes/synonyms-doc/synonyms.routes.js";
+import * as fabricantesRoutes from "./routes/fabricantes-doc/fabricantes.routes.js";
+import * as categoriasRoutes from "./routes/categorias-doc/categorias.routes.js";
+import * as catalogosRoutes from "./routes/catalogos-doc/catalogos.routes.js";
+import * as quotesRoutes from "./routes/quotes-doc/quotes.routes.js";
+import * as syncRoutes from "./routes/sync-doc/sync.routes.js";
+import * as sysplusRoutes from "./routes/sysplus-doc/sysplus.routes.js";
+import * as sitemapRoutes from "./routes/sitemap-doc/sitemap.routes.js";
+import { connectDB } from "./config/index.js";
 import { seedChannels } from "./db/seed/channels.js";
 import cron from "node-cron";
 import { runFullSync } from "./routes/cron-full-sync.js";
-const app = new Hono();
-// --- Middlewares globales ---
+const app = new OpenAPIHono({ strict: false });
 // --- Middlewares globales ---
 const allowedOrigins = new Set([
     "https://starprofessional.com.co",
     "https://www.starprofessional.com.co",
     "https://beta.starprofessional.com.co",
     "https://pruebas.starprofessional.com.co",
+    "https://starboutique.com.co",
+    "https://www.starboutique.com.co",
     "http://localhost:5173",
 ]);
 app.use("*", cors({
@@ -46,30 +65,147 @@ app.use("*", cors({
     ],
     maxAge: 86400,
 }));
-// responder preflight siempre (recomendado)
 app.options("*", () => new Response(null, { status: 204 }));
-// --- Conexión a la base de datos ---
-app.use("*", async (_c, next) => {
-    await connectDB();
-    return next();
-});
-// --- Rutas principales ---
+// --- Rutas documentadas (OpenAPIHono con .openapi()) ---
+app.route("/auth", auth);
+app.route("/health", health);
+app.route("/channels", channels);
+// --- Rutas existentes (Hono clásico — funcionan igual en OpenAPIHono) ---
 app.get("/", (c) => c.text("🚀 API de Star Profesional funcionando"));
 app.route("/products", productsRoute);
 app.route("/fabricantes", fabricantesRoute);
 app.route("/synonyms", synonymsRoute);
 app.route("/superadmins", superAdminsRoute);
 app.route("/sync", syncRoute);
-app.route("/auth", authRoute);
 app.route("/sysplus", sysplusRoute);
 app.route("/catalogos", catalogosRoute);
 app.route("/categorias", categoriasRoute);
-app.get("/health", (c) => c.json({ ok: true }));
 app.route("/quotes", quotesRoute);
 app.route("/coupons", couponsRoute);
-app.route("/channels", channelsRoute);
-// --- Seed de canales al arrancar ---
-connectDB().then(() => seedChannels()).catch(console.error);
+app.route("/sitemap.xml", sitemapRoute);
+// --- Registrar route definitions en el spec OpenAPI ---
+// Estas rutas NO manejan requests (los handlers existentes de arriba lo hacen),
+// solo agregan la documentación al spec. Usamos un handler stub que nunca se ejecuta
+// porque las rutas reales ya están montadas con mayor prioridad.
+const stub = (c) => c.json({});
+const docRoutes = new OpenAPIHono({ strict: false });
+// Products
+docRoutes.openapi(productsRoutes.getProducts, stub);
+docRoutes.openapi(productsRoutes.getProductByCode, stub);
+docRoutes.openapi(productsRoutes.getSuggestions, stub);
+docRoutes.openapi(productsRoutes.upsertProducts, stub);
+docRoutes.openapi(productsRoutes.patchRefCatalogo, stub);
+docRoutes.openapi(productsRoutes.bulkRefCatalogo, stub);
+docRoutes.openapi(productsRoutes.patchPromoCatalogo, stub);
+docRoutes.openapi(productsRoutes.bulkPromoCatalogo, stub);
+docRoutes.openapi(productsRoutes.getCatalogo, stub);
+app.route("/products", docRoutes);
+// SuperAdmins
+const saDoc = new OpenAPIHono({ strict: false });
+saDoc.openapi(superadminsRoutes.getSuperAdmins, stub);
+saDoc.openapi(superadminsRoutes.getSuperAdminByCodigo, stub);
+saDoc.openapi(superadminsRoutes.createSuperAdmin, stub);
+saDoc.openapi(superadminsRoutes.updateSuperAdmin, stub);
+saDoc.openapi(superadminsRoutes.deleteSuperAdmin, stub);
+saDoc.openapi(superadminsRoutes.upsertSuperAdmins, stub);
+app.route("/superadmins", saDoc);
+// Coupons
+const couDoc = new OpenAPIHono({ strict: false });
+couDoc.openapi(couponsRoutes.validateCoupon, stub);
+couDoc.openapi(couponsRoutes.getCoupons, stub);
+couDoc.openapi(couponsRoutes.createCoupon, stub);
+couDoc.openapi(couponsRoutes.updateCoupon, stub);
+couDoc.openapi(couponsRoutes.toggleCoupon, stub);
+couDoc.openapi(couponsRoutes.deleteCoupon, stub);
+app.route("/coupons", couDoc);
+// Synonyms
+const synDoc = new OpenAPIHono({ strict: false });
+synDoc.openapi(synonymsRoutes.getSynonyms, stub);
+synDoc.openapi(synonymsRoutes.getSynonymByTerm, stub);
+synDoc.openapi(synonymsRoutes.createSynonym, stub);
+synDoc.openapi(synonymsRoutes.replaceSynonym, stub);
+synDoc.openapi(synonymsRoutes.patchSynonym, stub);
+synDoc.openapi(synonymsRoutes.deleteSynonym, stub);
+synDoc.openapi(synonymsRoutes.upsertSynonyms, stub);
+app.route("/synonyms", synDoc);
+// Fabricantes
+const fabDoc = new OpenAPIHono({ strict: false });
+fabDoc.openapi(fabricantesRoutes.getFabricantes, stub);
+fabDoc.openapi(fabricantesRoutes.getFabricanteById, stub);
+fabDoc.openapi(fabricantesRoutes.createFabricante, stub);
+fabDoc.openapi(fabricantesRoutes.updateFabricante, stub);
+fabDoc.openapi(fabricantesRoutes.deleteFabricante, stub);
+fabDoc.openapi(fabricantesRoutes.upsertFabricantes, stub);
+app.route("/fabricantes", fabDoc);
+// Categorías
+const catDoc = new OpenAPIHono({ strict: false });
+catDoc.openapi(categoriasRoutes.getCategorias, stub);
+catDoc.openapi(categoriasRoutes.getCategoriaById, stub);
+catDoc.openapi(categoriasRoutes.createCategoria, stub);
+catDoc.openapi(categoriasRoutes.patchCategoria, stub);
+catDoc.openapi(categoriasRoutes.deleteCategoria, stub);
+app.route("/categorias", catDoc);
+// Catálogos
+const ctlDoc = new OpenAPIHono({ strict: false });
+ctlDoc.openapi(catalogosRoutes.getCatalogos, stub);
+ctlDoc.openapi(catalogosRoutes.getCatalogoById, stub);
+ctlDoc.openapi(catalogosRoutes.createCatalogo, stub);
+ctlDoc.openapi(catalogosRoutes.patchCatalogo, stub);
+ctlDoc.openapi(catalogosRoutes.deleteCatalogo, stub);
+app.route("/catalogos", ctlDoc);
+// Quotes
+const quoDoc = new OpenAPIHono({ strict: false });
+quoDoc.openapi(quotesRoutes.createQuote, stub);
+quoDoc.openapi(quotesRoutes.getQuotes, stub);
+quoDoc.openapi(quotesRoutes.getQuoteById, stub);
+quoDoc.openapi(quotesRoutes.patchQuote, stub);
+quoDoc.openapi(quotesRoutes.deleteQuote, stub);
+app.route("/quotes", quoDoc);
+// Sync
+const sncDoc = new OpenAPIHono({ strict: false });
+sncDoc.openapi(syncRoutes.syncFull, stub);
+sncDoc.openapi(syncRoutes.syncPrices, stub);
+sncDoc.openapi(syncRoutes.syncStock, stub);
+sncDoc.openapi(syncRoutes.syncFullStream, stub);
+sncDoc.openapi(syncRoutes.syncPricesStream, stub);
+sncDoc.openapi(syncRoutes.syncStockStream, stub);
+app.route("/sync", sncDoc);
+// Sysplus
+const sysDoc = new OpenAPIHono({ strict: false });
+sysDoc.openapi(sysplusRoutes.postCotizacionLog, stub);
+sysDoc.openapi(sysplusRoutes.getCotizacionLogs, stub);
+app.route("/sysplus", sysDoc);
+// Sitemap
+const sitDoc = new OpenAPIHono({ strict: false });
+sitDoc.openapi(sitemapRoutes.getSitemap, stub);
+app.route("/sitemap.xml", sitDoc);
+// --- OpenAPI spec + Scalar UI ---
+configureOpenAPI(app);
+app.get("/docs", apiReference({
+    url: "/open-api",
+    theme: "kepler",
+    layout: "classic",
+    defaultHttpClient: {
+        targetKey: "js",
+        clientKey: "fetch",
+    },
+}));
+// --- Arranque: conectar a DB una sola vez, luego seed y servidor ---
+async function bootstrap() {
+    try {
+        await connectDB();
+    }
+    catch (err) {
+        console.error("⚠️  No se pudo conectar a MongoDB al arrancar. Se reintentará en las requests.");
+    }
+    try {
+        await seedChannels();
+    }
+    catch (e) {
+        console.error("Seed error:", e);
+    }
+}
+bootstrap();
 // --- Cron: sincronización de productos a las 6am (solo entorno no-Vercel) ---
 if (!process.env.VERCEL) {
     cron.schedule("0 6 * * *", async () => {
@@ -96,4 +232,3 @@ if (!process.env.VERCEL) {
 }
 // --- Export para Vercel ---
 export default app;
-//

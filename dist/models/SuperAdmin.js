@@ -1,6 +1,6 @@
 import mongoose, { Schema, Document } from "mongoose";
 const SuperAdminSchema = new Schema({
-    Id: { type: String, required: true, trim: true, index: true }, // sin unique
+    Id: { type: String, required: true, trim: true }, // sin unique
     Codigo: { type: String, required: true, trim: true, unique: true }, // único
 }, { timestamps: true });
 // Índices adicionales (opcional: ya hay unique sobre Codigo; dejamos índice normal en Id)

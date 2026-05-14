@@ -90,6 +90,25 @@ function normalizeExistencias(remote: any[]): IExistencia[] {
 }
 
 // ====== FETCHERS REMOTOS ======
+const TIMEOUT_SMALL = 60_000;    // 1 min — búsquedas puntuales
+const TIMEOUT_LARGE = 900_000;   // 15 min — descarga masiva (Sysplus es lento)
+
+async function fetchWithRetry(url: string, timeout: number, retries = 2): Promise<any> {
+  let lastErr: any;
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      const { data } = await axios.get(url, { timeout });
+      return data;
+    } catch (err: any) {
+      lastErr = err;
+      if (attempt < retries) {
+        await new Promise((r) => setTimeout(r, 3000));
+      }
+    }
+  }
+  throw lastErr;
+}
+
 async function fetchArticulos(size?: number, buscar?: string) {
   const params: string[] = [];
   if (size != null) params.push(`size=${size}`);
@@ -97,7 +116,8 @@ async function fetchArticulos(size?: number, buscar?: string) {
   const url = `${SOURCE_BASE}/articulos${
     params.length ? "?" + params.join("&") : ""
   }`;
-  const { data } = await axios.get(url, { timeout: 60_000 });
+  const timeout = size && size > 5000 ? TIMEOUT_LARGE : TIMEOUT_SMALL;
+  const data = await fetchWithRetry(url, timeout);
   return extractArray(data);
 }
 
@@ -105,7 +125,7 @@ async function fetchPrecios(buscar?: string) {
   const url = `${SOURCE_BASE}/articulosSinc${
     buscar ? `?buscar=${encodeURIComponent(buscar)}` : ""
   }`;
-  const { data } = await axios.get(url, { timeout: 60_000 });
+  const data = await fetchWithRetry(url, TIMEOUT_SMALL);
   return extractArray(data);
 }
 
@@ -122,7 +142,7 @@ async function fetchExistencias(
   const url = `${SOURCE_BASE}/existencias_listado${query ? "?" + query : ""}${
     unidad ? (query ? "&unidad" : "?unidad") : ""
   }`;
-  const { data } = await axios.get(url, { timeout: 60_000 });
+  const data = await fetchWithRetry(url, TIMEOUT_SMALL);
   const arr = extractArray(data);
   // Si vino como objeto único { Codigo, Existencias }, conviértelo a array uniforme
   if (!arr.length && data?.Codigo) {

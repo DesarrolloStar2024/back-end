@@ -13,7 +13,7 @@ export const authMiddleware = (requireSuperAdmin = false) => {
         }
         const token = auth.split(" ")[1];
         try {
-            const payload = await verify(token, JWT_SECRET);
+            const payload = await verify(token, JWT_SECRET, "HS256");
             const user = payload.user || {};
             // Si requiere superadmin y no lo es → 403
             if (requireSuperAdmin && !user.isSuperAdmin) {
