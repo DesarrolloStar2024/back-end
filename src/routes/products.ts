@@ -1154,13 +1154,17 @@ productsRoute.get("/catalogo/:codFami", async (c) => {
       csv(decodeSafe(codFamiParam)).filter((x) => x !== "*" && x !== "ALL"),
     );
 
-    // Bodegas dinámicas: desde channelId si se provee, si no default 01+06
+    // Bodegas y marcas dinámicas: desde channelId si se provee, si no default 01+06
     const channelIdCat = c.req.query("channelId");
     let bodegas: string[] = ["01", "06"];
+    let channelMarcasCat: string[] | null = null;
     if (channelIdCat) {
       try {
         const ch = (await Channel.findById(channelIdCat).lean()) as IChannel | null;
-        if (ch?.bodegas?.length) bodegas = ch.bodegas;
+        if (ch) {
+          if (ch.bodegas?.length) bodegas = ch.bodegas;
+          channelMarcasCat = ch.marcas ?? [];
+        }
       } catch { /* ID inválido */ }
     }
     const stands: string[] = [];
@@ -1181,6 +1185,12 @@ productsRoute.get("/catalogo/:codFami", async (c) => {
     // Una sola combinación 'cadena=B-6-2' (compatibilidad)
     const cadenaSingle = decodeSafe(c.req.query("cadena"));
     if (cadenaSingle) cadenas.push(cadenaSingle);
+
+    // ---------- Filtro por marcas del canal ----------
+    const pipeline: any[] = [];
+    if (channelMarcasCat !== null && channelMarcasCat.length > 0) {
+      pipeline.push({ $match: { Fabricante: { $in: channelMarcasCat } } });
+    }
 
     // ---------- $match jerárquico ----------
     const matchOr: any[] = [];
@@ -1210,8 +1220,6 @@ productsRoute.get("/catalogo/:codFami", async (c) => {
       exprAndDims.push({
         $in: [{ $toString: "$CodSubgrupo" }, subgrupos],
       });
-
-    const pipeline: any[] = [];
 
     if (matchOr.length) {
       // Si hay combinaciones, priorizamos OR de combos
