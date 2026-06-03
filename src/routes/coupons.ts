@@ -6,11 +6,9 @@ import { CouponModel } from "../models/Coupon.js";
 export const couponsRoute = new Hono();
 
 const normalizeCode = (v: unknown) =>
-  String(v || "")
-    .toUpperCase()
-    .trim();
+  (typeof v === "string" ? v : "").toUpperCase().trim();
 
-type ValidateBody = { code?: string };
+type ValidateBody = { code?: string; channelId?: string };
 type CouponValidateLean = { code: string; discountPercentage: number };
 
 couponsRoute.post("/validate", async (c) => {
@@ -18,10 +16,13 @@ couponsRoute.post("/validate", async (c) => {
 
   const b = await c.req.json<ValidateBody>().catch((): ValidateBody => ({}));
   const code = normalizeCode(b.code);
+  const channelId = b.channelId ? String(b.channelId).trim() : null;
 
   if (!code) return c.json({ valid: false, message: "Código requerido" }, 400);
 
-  const coupon = await CouponModel.findOne({ code, isActive: true })
+  const channelFilter = channelId ? { channelIds: channelId } : {};
+
+  const coupon = await CouponModel.findOne({ code, isActive: true, ...channelFilter })
     .select({ code: 1, discountPercentage: 1, _id: 0 })
     .lean<CouponValidateLean>()
     .exec();
@@ -43,10 +44,10 @@ couponsRoute.get("/", authMiddleware(true), async (c) => {
   await connectDB();
 
   const q = (c.req.query("q") || "").toUpperCase().trim();
-  const page = Math.max(1, parseInt(c.req.query("page") || "1", 10));
+  const page = Math.max(1, Number.parseInt(c.req.query("page") || "1", 10));
   const size = Math.min(
     500,
-    Math.max(1, parseInt(c.req.query("size") || "50", 10))
+    Math.max(1, Number.parseInt(c.req.query("size") || "50", 10))
   );
   const skip = (page - 1) * size;
 
@@ -110,8 +111,10 @@ couponsRoute.post("/", authMiddleware(true), async (c) => {
     );
   }
 
+  const channelIds = Array.isArray(b.channelIds) ? b.channelIds.map(String) : [];
+
   try {
-    await CouponModel.create({ code, discountPercentage, isActive });
+    await CouponModel.create({ code, discountPercentage, isActive, channelIds });
     return c.json({ message: "OK" }, 201);
   } catch (err: any) {
     // Duplicado
@@ -143,6 +146,7 @@ couponsRoute.put("/:code", authMiddleware(true), async (c) => {
     update.discountPercentage = d;
   }
   if (b.isActive !== undefined) update.isActive = Boolean(b.isActive);
+  if (Array.isArray(b.channelIds)) update.channelIds = b.channelIds.map(String);
 
   const r = await CouponModel.updateOne({ code }, { $set: update });
   if (!r.matchedCount) return c.json({ message: "No encontrado" }, 404);

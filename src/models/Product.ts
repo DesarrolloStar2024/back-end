@@ -6,6 +6,12 @@ export interface IExistencia {
   Stand: string;
 }
 
+export interface IPrecioNamed {
+  nombre: string; // "PVP", "UNIDAD", "EMPRENDEDOR"…
+  precio: string; // "9,400"
+  cant: string;   // "1", "2", "6"…
+}
+
 export interface IProduct extends Document {
   Codigo: string;
   Descripcion: string;
@@ -47,6 +53,8 @@ export interface IProduct extends Document {
   Foto: string;
   Existencias: IExistencia[];
   Reg: number;
+
+  Precios?: IPrecioNamed[]; // array nombrado de la fuente (PVP, UNIDAD, EMPRENDEDOR…)
 
   // NUEVOS FLAGS
   PromoCatalogo?: { activo: boolean; promo: string };
@@ -104,6 +112,11 @@ const ProductSchema = new Schema<IProduct>(
     Foto: String,
     Existencias: [ExistenciaSchema],
     Reg: Number,
+
+    Precios: {
+      type: [{ nombre: String, precio: String, cant: String, _id: false }],
+      default: [],
+    },
 
     // NUEVOS
     PromoCatalogo: {

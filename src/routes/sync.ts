@@ -2,7 +2,7 @@
 import { Hono } from "hono";
 import axios from "axios";
 import { Product } from "../models/Product.js";
-import type { IProduct, IExistencia } from "../models/Product.js";
+import type { IProduct, IExistencia, IPrecioNamed } from "../models/Product.js";
 import { streamSSE } from "hono/streaming";
 import { authMiddleware } from "../middleware/auth.js";
 
@@ -33,6 +33,27 @@ const extractArray = (data: any): any[] => {
 };
 
 // ====== NORMALIZADORES A TU MODELO ======
+
+/**
+ * Convierte el array Precios de la fuente (claves numeradas NombreN/PrecioN/CantN)
+ * a un array uniforme { nombre, precio, cant }.
+ */
+function normalizePreciosArray(raw: any[]): IPrecioNamed[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((entry) => {
+      const nk = Object.keys(entry).find((k) => k.startsWith("Nombre"));
+      const pk = Object.keys(entry).find((k) => k.startsWith("Precio"));
+      const ck = Object.keys(entry).find((k) => k.startsWith("Cant"));
+      return {
+        nombre: toStr(nk ? entry[nk] : ""),
+        precio: toNumStr(pk ? entry[pk] : ""),
+        cant: toNumStr(ck ? entry[ck] : ""),
+      };
+    })
+    .filter((e) => e.nombre);
+}
+
 function normalizeProduct(remote: any): Partial<IProduct> {
   return {
     Codigo: toStr(remote.Codigo ?? remote.codigo),
@@ -73,6 +94,7 @@ function normalizeProduct(remote: any): Partial<IProduct> {
     Precio6: toNumStr(remote.Precio6),
     Cant6: toNumStr(remote.Cant6),
     Foto: toStr(remote.Foto),
+    Precios: normalizePreciosArray(remote.Precios ?? []),
     // Si tu fuente ya trae Existencias en /articulos, respétalas
     Existencias: Array.isArray(remote.Existencias)
       ? normalizeExistencias(remote.Existencias)
@@ -212,6 +234,7 @@ async function writePrices(
           Cant5: toNumStr(r.Cant5),
           Precio6: toNumStr(r.Precio6),
           Cant6: toNumStr(r.Cant6),
+          Precios: normalizePreciosArray(r.Precios ?? []),
         };
         return {
           updateOne: {

@@ -4,6 +4,7 @@ export interface Coupon {
   code: string; // en MAYÚSCULAS
   discountPercentage: number; // 0.10 = 10%
   isActive: boolean;
+  channelIds: string[]; // IDs de canal donde aplica (explícito). Vacío = no aplica a ningún canal
   createdAt: Date;
   updatedAt: Date;
 }
@@ -13,6 +14,7 @@ const CouponSchema = new Schema<Coupon>(
     code: { type: String, required: true, unique: true, trim: true },
     discountPercentage: { type: Number, required: true, min: 0, max: 1 },
     isActive: { type: Boolean, default: false },
+    channelIds: { type: [String], default: [] },
   },
   { timestamps: true }
 );

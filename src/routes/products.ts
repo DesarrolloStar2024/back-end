@@ -13,6 +13,26 @@ import {
   buildOrRegex,
 } from "../utils/search.js";
 import { authMiddleware } from "../middleware/auth.js";
+import { verify } from "hono/jwt";
+
+const JWT_SECRET = process.env.JWT_SECRET || "TU_SUPER_SECRETO";
+
+async function isAdminRequest(authHeader: string | undefined): Promise<boolean> {
+  if (!authHeader?.startsWith("Bearer ")) return false;
+  try {
+    const payload = await verify(authHeader.split(" ")[1], JWT_SECRET, "HS256");
+    return !!(payload?.user as any)?.isSuperAdmin;
+  } catch {
+    return false;
+  }
+}
+
+const PRICE_FIELDS_PROJECT = {
+  Precio: 0, Precio2: 0, Precio3: 0, Precio4: 0, Precio5: 0, Precio6: 0,
+  Cant2: 0, Cant3: 0, Cant4: 0, Cant5: 0, Cant6: 0,
+  PrecioCanal: 0,
+  // Precios (normalized array) is intentionally kept — the frontend uses it for all tier rendering
+} as const;
 
 export const productsRoute = new Hono();
 
@@ -540,6 +560,12 @@ productsRoute.get("/", async (c) => {
     pipeline.push({ $sort: { TotalExist: sortDir, Descripcion: 1 } }); // desempate por nombre asc
   } else {
     pipeline.push({ $sort: { Descripcion: sortDir } });
+  }
+
+  // Filtrar campos de precio para peticiones sin token superadmin
+  const isAdmin = await isAdminRequest(c.req.header("Authorization"));
+  if (!isAdmin) {
+    pipeline.push({ $project: PRICE_FIELDS_PROJECT });
   }
 
   // Paginado con facet

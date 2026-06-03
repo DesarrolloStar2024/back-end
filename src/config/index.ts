@@ -39,8 +39,10 @@ export const connectDB = async () => {
         return;
       }
 
+      // DB_NAME sobreescribe todo; si no se define, usa la base del URI (ej: /staging)
+      const dbName = process.env.DB_NAME || undefined;
       await mongoose.connect(uri, {
-        dbName: "starprofesional",
+        ...(dbName ? { dbName } : {}),
         serverSelectionTimeoutMS: 10000,
       });
 
