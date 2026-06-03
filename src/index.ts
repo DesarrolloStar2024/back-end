@@ -24,6 +24,7 @@ import { quotesRoute } from "./routes/quotes.js";
 import { couponsRoute } from "./routes/coupons.js";
 import { sitemapRoute } from "./routes/sitemap.js";
 import { pricelistsRoute } from "./routes/pricelists.js";
+import { comprasNacionalesRoute } from "./routes/comprasNacionales.js";
 
 // --- Route definitions (solo para OpenAPI spec, no manejan requests) ---
 import * as productsRoutes from "./routes/products-doc/products.routes.js";
@@ -97,6 +98,7 @@ app.route("/quotes", quotesRoute);
 app.route("/coupons", couponsRoute);
 app.route("/sitemap.xml", sitemapRoute);
 app.route("/pricelists", pricelistsRoute);
+app.route("/compras-nacionales", comprasNacionalesRoute);
 
 // --- Registrar route definitions en el spec OpenAPI ---
 // Estas rutas NO manejan requests (los handlers existentes de arriba lo hacen),

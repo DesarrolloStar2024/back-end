@@ -61,13 +61,14 @@ channelsRoute.post("/", async (c) => {
 channelsRoute.patch("/:id", async (c) => {
   await connectDB();
   const id = c.req.param("id");
-  const { name, slug, bodegas, marcas } = await c.req.json();
+  const { name, slug, bodegas, marcas, settings } = await c.req.json();
 
   const update: Partial<IChannel> = {};
   if (name !== undefined) update.name = name;
   if (slug !== undefined) update.slug = slug;
   if (bodegas !== undefined) update.bodegas = bodegas;
   if (marcas !== undefined) update.marcas = marcas;
+  if (settings !== undefined) update.settings = settings;
 
   let channel: IChannel | null;
   try {
