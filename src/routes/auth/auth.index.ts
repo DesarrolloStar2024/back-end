@@ -30,7 +30,14 @@ auth.openapi(loginRoute, async (c): Promise<any> => {
 
     const payload = {
       iss: "STAR_BACK",
-      user: { usuario, vend, isSuperAdmin: true },
+      user: {
+        usuario,
+        vend,
+        Codigo: superAdmin.Codigo,
+        Id: superAdmin.Id,
+        nombre: superAdmin.Codigo, // no hay nombre humano; el Codigo identifica al superadmin
+        isSuperAdmin: true,
+      },
       iat: Math.floor(Date.now() / 1000),
       exp: expireAt || Math.floor(Date.now() / 1000) + 60 * 60 * 12,
     };

@@ -8,7 +8,12 @@ export const COMPRA_ESTADOS = [
 ] as const;
 export type CompraEstado = (typeof COMPRA_ESTADOS)[number];
 
-export interface CompraItem {
+/**
+ * A partir del refactor, cada documento representa UN PRODUCTO pedido
+ * (no una compra con varios items). Cada producto tiene su propio estado.
+ */
+export interface CompraNacional extends Document {
+  code: string;
   codigo: string;
   referencia: string;
   descripcion: string;
@@ -18,23 +23,17 @@ export interface CompraItem {
   cantidad: number;
   precioUnd: number;
   precioTotal: number;
-}
-
-export interface CompraNacional extends Document {
-  code: string;
   channelId?: string;
   createdBy?: { code?: string; name?: string };
-  observations?: string;
   status: CompraEstado;
-  items: CompraItem[];
-  total: number;
   statusHistory: { status: CompraEstado; at: Date; by?: string }[];
   createdAt: Date;
   updatedAt: Date;
 }
 
-const ItemSchema = new Schema<CompraItem>(
+const CompraNacionalSchema = new Schema<CompraNacional>(
   {
+    code: { type: String, required: true, unique: true },
     codigo: { type: String, default: "" },
     referencia: { type: String, default: "" },
     descripcion: { type: String, default: "" },
@@ -44,22 +43,12 @@ const ItemSchema = new Schema<CompraItem>(
     cantidad: { type: Number, default: 0 },
     precioUnd: { type: Number, default: 0 },
     precioTotal: { type: Number, default: 0 },
-  },
-  { _id: false }
-);
-
-const CompraNacionalSchema = new Schema<CompraNacional>(
-  {
-    code: { type: String, required: true, unique: true },
     channelId: { type: String, default: "" },
     createdBy: {
       code: { type: String, default: "" },
       name: { type: String, default: "" },
     },
-    observations: { type: String, default: "" },
     status: { type: String, enum: COMPRA_ESTADOS, default: "solicitado" },
-    items: { type: [ItemSchema], default: [] },
-    total: { type: Number, default: 0 },
     statusHistory: {
       type: [
         new Schema(
@@ -80,6 +69,8 @@ const CompraNacionalSchema = new Schema<CompraNacional>(
 CompraNacionalSchema.index({ createdAt: -1 });
 CompraNacionalSchema.index({ status: 1 });
 CompraNacionalSchema.index({ channelId: 1 });
+CompraNacionalSchema.index({ marca: 1 });
+CompraNacionalSchema.index({ fabricante: 1 });
 
 export const CompraNacionalModel =
   mongoose.models.CompraNacional ||

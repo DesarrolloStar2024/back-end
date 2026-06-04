@@ -556,7 +556,41 @@ productsRoute.get("/", async (c) => {
   ).toLowerCase();
   const sortDir = dir === "asc" ? 1 : -1;
 
-  if (order === "total") {
+  // Relevancia: si hay búsqueda por `title`, priorizar coincidencias del código/barras
+  // (exacto > empieza por > contiene > empieza por en descripción) antes del orden normal.
+  if (title) {
+    const raw = title.trim();
+    const safe = escapeRegex(raw);
+    const cod = { $ifNull: ["$Codigo", ""] };
+    const bar = { $ifNull: ["$Barras", ""] };
+    const desc = { $ifNull: ["$Descripcion", ""] };
+
+    pipeline.push({
+      $addFields: {
+        _rel: {
+          $switch: {
+            branches: [
+              { case: { $regexMatch: { input: cod, regex: `^${safe}$`, options: "i" } }, then: 6 },
+              { case: { $regexMatch: { input: cod, regex: `^${safe}`, options: "i" } }, then: 5 },
+              { case: { $regexMatch: { input: bar, regex: `^${safe}$`, options: "i" } }, then: 4 },
+              { case: { $regexMatch: { input: bar, regex: `^${safe}`, options: "i" } }, then: 3 },
+              { case: { $regexMatch: { input: cod, regex: safe, options: "i" } }, then: 2 },
+              { case: { $regexMatch: { input: desc, regex: `^${safe}`, options: "i" } }, then: 1 },
+            ],
+            default: 0,
+          },
+        },
+      },
+    });
+
+    if (order === "total") {
+      pipeline.push({ $sort: { _rel: -1, TotalExist: sortDir, Descripcion: 1 } });
+    } else {
+      pipeline.push({ $sort: { _rel: -1, Descripcion: sortDir } });
+    }
+
+    pipeline.push({ $unset: "_rel" });
+  } else if (order === "total") {
     pipeline.push({ $sort: { TotalExist: sortDir, Descripcion: 1 } }); // desempate por nombre asc
   } else {
     pipeline.push({ $sort: { Descripcion: sortDir } });

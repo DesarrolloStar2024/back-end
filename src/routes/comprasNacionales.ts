@@ -30,7 +30,8 @@ const mapItem = (it: any) => {
   };
 };
 
-// POST / — crear compra nacional (super admin)
+// POST / — crear pedido por producto (super admin)
+// Cada item recibido se guarda como UN documento independiente con su propio estado.
 comprasNacionalesRoute.post("/", authMiddleware(true), async (c) => {
   await connectDB();
   const body = await c.req.json().catch(() => ({}));
@@ -40,42 +41,52 @@ comprasNacionalesRoute.post("/", authMiddleware(true), async (c) => {
     return c.json({ error: "La compra no tiene productos" }, 400);
   }
 
-  const total =
-    toNum(body.total) ||
-    items.reduce((acc: number, it: any) => acc + it.precioTotal, 0);
-
   const user = (c as any).get("user") as
-    | { Codigo?: string; nombre?: string }
+    | { Codigo?: string; nombre?: string; usuario?: string; vend?: string | number }
     | undefined;
-  const code = `CN-${Date.now()}`;
 
-  const compra = await CompraNacionalModel.create({
-    code,
-    channelId: body.channelId ? String(body.channelId) : "",
-    createdBy: {
-      code: String(user?.Codigo ?? body?.createdBy?.code ?? ""),
-      name: String(user?.nombre ?? body?.createdBy?.name ?? ""),
-    },
-    observations: String(body.observations ?? ""),
-    status: "solicitado",
-    items,
-    total,
-    statusHistory: [{ status: "solicitado", at: new Date(), by: code }],
+  const channelId = body.channelId ? String(body.channelId) : "";
+  const createdBy = {
+    code: String(
+      user?.Codigo ?? user?.usuario ?? body?.createdBy?.code ?? user?.vend ?? ""
+    ),
+    name: String(
+      user?.nombre ?? body?.createdBy?.name ?? user?.usuario ?? ""
+    ),
+  };
+
+  const now = Date.now();
+  const docs = items.map((it: any, idx: number) => {
+    const code = `CN-${now}-${idx}`;
+    return {
+      code,
+      ...it,
+      channelId,
+      createdBy,
+      status: "solicitado",
+      statusHistory: [{ status: "solicitado", at: new Date(), by: createdBy.code }],
+    };
   });
 
-  return c.json(compra, 201);
+  const created = await CompraNacionalModel.insertMany(docs);
+
+  return c.json({ count: created.length, items: created }, 201);
 });
 
-// GET / — listar (super admin) con filtros y paginación
+// GET / — listar productos pedidos (super admin) con filtros y paginación
 comprasNacionalesRoute.get("/", authMiddleware(true), async (c) => {
   await connectDB();
 
   const status = c.req.query("status");
   const channelId = c.req.query("channelId");
+  const marca = (c.req.query("marca") || "").trim();
+  const fabricante = (c.req.query("fabricante") || "").trim();
+  const from = (c.req.query("from") || "").trim();
+  const to = (c.req.query("to") || "").trim();
   const q = (c.req.query("q") || "").trim();
   const page = Math.max(1, Number.parseInt(c.req.query("page") || "1", 10));
   const size = Math.min(
-    200,
+    500,
     Math.max(1, Number.parseInt(c.req.query("size") || "50", 10))
   );
 
@@ -83,7 +94,25 @@ comprasNacionalesRoute.get("/", authMiddleware(true), async (c) => {
   if (status && COMPRA_ESTADOS.includes(status as CompraEstado))
     filter.status = status;
   if (channelId) filter.channelId = channelId;
-  if (q) filter.code = { $regex: new RegExp(q, "i") };
+  if (marca) filter.marca = { $regex: new RegExp(marca, "i") };
+  if (fabricante) filter.fabricante = { $regex: new RegExp(fabricante, "i") };
+  if (from || to) {
+    filter.createdAt = {};
+    if (from) filter.createdAt.$gte = new Date(from);
+    if (to) {
+      // incluir todo el día "to"
+      const end = new Date(to);
+      end.setHours(23, 59, 59, 999);
+      filter.createdAt.$lte = end;
+    }
+  }
+  if (q) {
+    filter.$or = [
+      { code: { $regex: new RegExp(q, "i") } },
+      { codigo: { $regex: new RegExp(q, "i") } },
+      { descripcion: { $regex: new RegExp(q, "i") } },
+    ];
+  }
 
   const [items, totalDocs] = await Promise.all([
     CompraNacionalModel.find(filter)

@@ -8,8 +8,33 @@ export const couponsRoute = new Hono();
 const normalizeCode = (v: unknown) =>
   (typeof v === "string" ? v : "").toUpperCase().trim();
 
-type ValidateBody = { code?: string; channelId?: string };
-type CouponValidateLean = { code: string; discountPercentage: number };
+type ListDiscount = { listSlug: string; discountPercentage: number };
+
+// Normaliza/valida un arreglo de descuentos por lista recibido del cliente.
+// Acepta % en 0..1; devuelve null si alguna entrada es inválida.
+const parseDiscountsByList = (
+  v: unknown
+): ListDiscount[] | null => {
+  if (!Array.isArray(v)) return null;
+  const out: ListDiscount[] = [];
+  const seen = new Set<string>();
+  for (const it of v) {
+    const listSlug = String((it as any)?.listSlug ?? "").trim();
+    const d = Number((it as any)?.discountPercentage);
+    if (!listSlug) return null;
+    if (!Number.isFinite(d) || d <= 0 || d > 1) return null;
+    if (seen.has(listSlug)) continue; // ignora duplicados de lista
+    seen.add(listSlug);
+    out.push({ listSlug, discountPercentage: d });
+  }
+  return out;
+};
+
+type ValidateBody = { code?: string; channelId?: string; listSlug?: string };
+type CouponValidateLean = {
+  code: string;
+  discountsByList?: ListDiscount[];
+};
 
 couponsRoute.post("/validate", async (c) => {
   await connectDB();
@@ -17,22 +42,41 @@ couponsRoute.post("/validate", async (c) => {
   const b = await c.req.json<ValidateBody>().catch((): ValidateBody => ({}));
   const code = normalizeCode(b.code);
   const channelId = b.channelId ? String(b.channelId).trim() : null;
+  const listSlug = b.listSlug ? String(b.listSlug).trim() : null;
 
   if (!code) return c.json({ valid: false, message: "Código requerido" }, 400);
 
   const channelFilter = channelId ? { channelIds: channelId } : {};
 
   const coupon = await CouponModel.findOne({ code, isActive: true, ...channelFilter })
-    .select({ code: 1, discountPercentage: 1, _id: 0 })
+    .select({ code: 1, discountsByList: 1, _id: 0 })
     .lean<CouponValidateLean>()
     .exec();
 
   if (!coupon) return c.json({ valid: false, message: "Cupón no válido" }, 404);
 
+  if (!listSlug) {
+    return c.json(
+      { valid: false, message: "No se pudo determinar tu lista de precios" },
+      400
+    );
+  }
+
+  const entry = (coupon.discountsByList || []).find(
+    (d) => d.listSlug === listSlug
+  );
+
+  if (!entry) {
+    return c.json(
+      { valid: false, message: "Cupón no aplica a tu lista de precios" },
+      404
+    );
+  }
+
   return c.json({
     valid: true,
     code: coupon.code,
-    discountPercentage: coupon.discountPercentage,
+    discountPercentage: entry.discountPercentage,
   });
 });
 
@@ -96,17 +140,17 @@ couponsRoute.post("/", authMiddleware(true), async (c) => {
 
   const b = await c.req.json().catch(() => ({}));
   const code = normalizeCode(b.code);
-  const discountPercentage = Number(b.discountPercentage);
   const isActive = Boolean(b.isActive);
 
   if (!code) return c.json({ message: "code requerido" }, 400);
-  if (
-    !Number.isFinite(discountPercentage) ||
-    discountPercentage <= 0 ||
-    discountPercentage > 1
-  ) {
+
+  const discountsByList = parseDiscountsByList(b.discountsByList);
+  if (!discountsByList || discountsByList.length === 0) {
     return c.json(
-      { message: "discountPercentage debe estar entre 0 y 1" },
+      {
+        message:
+          "discountsByList debe tener al menos un listado con descuento entre 0 y 1",
+      },
       400
     );
   }
@@ -114,7 +158,7 @@ couponsRoute.post("/", authMiddleware(true), async (c) => {
   const channelIds = Array.isArray(b.channelIds) ? b.channelIds.map(String) : [];
 
   try {
-    await CouponModel.create({ code, discountPercentage, isActive, channelIds });
+    await CouponModel.create({ code, discountsByList, isActive, channelIds });
     return c.json({ message: "OK" }, 201);
   } catch (err: any) {
     // Duplicado
@@ -135,15 +179,18 @@ couponsRoute.put("/:code", authMiddleware(true), async (c) => {
   const b = await c.req.json().catch(() => ({}));
 
   const update: any = {};
-  if (b.discountPercentage !== undefined) {
-    const d = Number(b.discountPercentage);
-    if (!Number.isFinite(d) || d <= 0 || d > 1) {
+  if (b.discountsByList !== undefined) {
+    const discountsByList = parseDiscountsByList(b.discountsByList);
+    if (!discountsByList || discountsByList.length === 0) {
       return c.json(
-        { message: "discountPercentage debe estar entre 0 y 1" },
+        {
+          message:
+            "discountsByList debe tener al menos un listado con descuento entre 0 y 1",
+        },
         400
       );
     }
-    update.discountPercentage = d;
+    update.discountsByList = discountsByList;
   }
   if (b.isActive !== undefined) update.isActive = Boolean(b.isActive);
   if (Array.isArray(b.channelIds)) update.channelIds = b.channelIds.map(String);
