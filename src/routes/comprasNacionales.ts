@@ -17,6 +17,13 @@ const toNum = (v: unknown) => {
 const mapItem = (it: any) => {
   const cantidad = toNum(it?.cantidad);
   const precioUnd = toNum(it?.precioUnd);
+  const precios = Array.isArray(it?.precios)
+    ? it.precios.map((p: any) => ({
+        nombre: String(p?.nombre ?? ""),
+        precio: String(p?.precio ?? ""),
+        cant: String(p?.cant ?? ""),
+      }))
+    : [];
   return {
     codigo: String(it?.codigo ?? ""),
     referencia: String(it?.referencia ?? ""),
@@ -27,6 +34,9 @@ const mapItem = (it: any) => {
     cantidad,
     precioUnd,
     precioTotal: toNum(it?.precioTotal) || precioUnd * cantidad,
+    unidad: String(it?.unidad ?? ""),
+    stock: String(it?.stock ?? ""),
+    precios,
   };
 };
 

@@ -6,6 +6,25 @@ import { Channel } from "../models/Channel.js";
 import { connectDB } from "../config/index.js";
 import { ES_COLLATION, toTokens, parseCadena, parseBoolish, expandWithSynonyms, buildOrRegex, } from "../utils/search.js";
 import { authMiddleware } from "../middleware/auth.js";
+import { verify } from "hono/jwt";
+const JWT_SECRET = process.env.JWT_SECRET || "TU_SUPER_SECRETO";
+async function isAdminRequest(authHeader) {
+    if (!authHeader?.startsWith("Bearer "))
+        return false;
+    try {
+        const payload = await verify(authHeader.split(" ")[1], JWT_SECRET, "HS256");
+        return !!payload?.user?.isSuperAdmin;
+    }
+    catch {
+        return false;
+    }
+}
+const PRICE_FIELDS_PROJECT = {
+    Precio: 0, Precio2: 0, Precio3: 0, Precio4: 0, Precio5: 0, Precio6: 0,
+    Cant2: 0, Cant3: 0, Cant4: 0, Cant5: 0, Cant6: 0,
+    PrecioCanal: 0,
+    // Precios (normalized array) is intentionally kept — the frontend uses it for all tier rendering
+};
 export const productsRoute = new Hono();
 // === Helpers de búsqueda acento-insensible ===
 const escapeRx = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -463,11 +482,49 @@ productsRoute.get("/", async (c) => {
     const order = (c.req.query("order") || "alpha").toLowerCase(); // 'alpha' | 'total'
     const dir = (c.req.query("dir") || (order === "alpha" ? "asc" : "desc")).toLowerCase();
     const sortDir = dir === "asc" ? 1 : -1;
-    if (order === "total") {
+    // Relevancia: si hay búsqueda por `title`, priorizar coincidencias del código/barras
+    // (exacto > empieza por > contiene > empieza por en descripción) antes del orden normal.
+    if (title) {
+        const raw = title.trim();
+        const safe = escapeRegex(raw);
+        const cod = { $ifNull: ["$Codigo", ""] };
+        const bar = { $ifNull: ["$Barras", ""] };
+        const desc = { $ifNull: ["$Descripcion", ""] };
+        pipeline.push({
+            $addFields: {
+                _rel: {
+                    $switch: {
+                        branches: [
+                            { case: { $regexMatch: { input: cod, regex: `^${safe}$`, options: "i" } }, then: 6 },
+                            { case: { $regexMatch: { input: cod, regex: `^${safe}`, options: "i" } }, then: 5 },
+                            { case: { $regexMatch: { input: bar, regex: `^${safe}$`, options: "i" } }, then: 4 },
+                            { case: { $regexMatch: { input: bar, regex: `^${safe}`, options: "i" } }, then: 3 },
+                            { case: { $regexMatch: { input: cod, regex: safe, options: "i" } }, then: 2 },
+                            { case: { $regexMatch: { input: desc, regex: `^${safe}`, options: "i" } }, then: 1 },
+                        ],
+                        default: 0,
+                    },
+                },
+            },
+        });
+        if (order === "total") {
+            pipeline.push({ $sort: { _rel: -1, TotalExist: sortDir, Descripcion: 1 } });
+        }
+        else {
+            pipeline.push({ $sort: { _rel: -1, Descripcion: sortDir } });
+        }
+        pipeline.push({ $unset: "_rel" });
+    }
+    else if (order === "total") {
         pipeline.push({ $sort: { TotalExist: sortDir, Descripcion: 1 } }); // desempate por nombre asc
     }
     else {
         pipeline.push({ $sort: { Descripcion: sortDir } });
+    }
+    // Filtrar campos de precio para peticiones sin token superadmin
+    const isAdmin = await isAdminRequest(c.req.header("Authorization"));
+    if (!isAdmin) {
+        pipeline.push({ $project: PRICE_FIELDS_PROJECT });
     }
     // Paginado con facet
     pipeline.push({
@@ -972,14 +1029,18 @@ productsRoute.get("/catalogo/:codFami", async (c) => {
         }
         // Soporta múltiples familias en el path, e ignora '*' o 'all'
         const famis = toUpperArr(csv(decodeSafe(codFamiParam)).filter((x) => x !== "*" && x !== "ALL"));
-        // Bodegas dinámicas: desde channelId si se provee, si no default 01+06
+        // Bodegas y marcas dinámicas: desde channelId si se provee, si no default 01+06
         const channelIdCat = c.req.query("channelId");
         let bodegas = ["01", "06"];
+        let channelMarcasCat = null;
         if (channelIdCat) {
             try {
                 const ch = (await Channel.findById(channelIdCat).lean());
-                if (ch?.bodegas?.length)
-                    bodegas = ch.bodegas;
+                if (ch) {
+                    if (ch.bodegas?.length)
+                        bodegas = ch.bodegas;
+                    channelMarcasCat = ch.marcas ?? [];
+                }
             }
             catch { /* ID inválido */ }
         }
@@ -997,6 +1058,11 @@ productsRoute.get("/catalogo/:codFami", async (c) => {
         const cadenaSingle = decodeSafe(c.req.query("cadena"));
         if (cadenaSingle)
             cadenas.push(cadenaSingle);
+        // ---------- Filtro por marcas del canal ----------
+        const pipeline = [];
+        if (channelMarcasCat !== null && channelMarcasCat.length > 0) {
+            pipeline.push({ $match: { Fabricante: { $in: channelMarcasCat } } });
+        }
         // ---------- $match jerárquico ----------
         const matchOr = [];
         if (cadenas.length) {
@@ -1025,7 +1091,6 @@ productsRoute.get("/catalogo/:codFami", async (c) => {
             exprAndDims.push({
                 $in: [{ $toString: "$CodSubgrupo" }, subgrupos],
             });
-        const pipeline = [];
         if (matchOr.length) {
             // Si hay combinaciones, priorizamos OR de combos
             pipeline.push({ $match: { $or: matchOr } });

@@ -45,6 +45,10 @@ const ProductSchema = new Schema({
     Foto: String,
     Existencias: [ExistenciaSchema],
     Reg: Number,
+    Precios: {
+        type: [{ nombre: String, precio: String, cant: String, _id: false }],
+        default: [],
+    },
     // NUEVOS
     PromoCatalogo: {
         activo: { type: Boolean, default: false },

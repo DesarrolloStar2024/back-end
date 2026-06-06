@@ -6,6 +6,14 @@ export interface IChannelAddress {
   mapUrl?: string;
 }
 
+export interface IBodegaDisplay {
+  bodega: string; // código de bodega (ej. "01")
+  displayName?: string; // nombre a mostrar (ej. "SP")
+  showName?: boolean;
+  showUnidades?: boolean;
+  showStand?: boolean;
+}
+
 export interface IChannelSettings {
   brandName?: string;
   whatsapp?: string; // formato wa.me, solo dígitos (ej. 573123924999)
@@ -22,6 +30,7 @@ export interface IChannelSettings {
     vision?: string;
     valores?: string[];
   };
+  bodegasDisplay?: IBodegaDisplay[];
 }
 
 export interface IChannel extends Document {
@@ -38,6 +47,17 @@ const AddressSchema = new Schema<IChannelAddress>(
     city: { type: String, default: "" },
     address: { type: String, default: "" },
     mapUrl: { type: String, default: "" },
+  },
+  { _id: false }
+);
+
+const BodegaDisplaySchema = new Schema<IBodegaDisplay>(
+  {
+    bodega: { type: String, default: "" },
+    displayName: { type: String, default: "" },
+    showName: { type: Boolean, default: true },
+    showUnidades: { type: Boolean, default: false },
+    showStand: { type: Boolean, default: true },
   },
   { _id: false }
 );
@@ -59,6 +79,7 @@ const SettingsSchema = new Schema<IChannelSettings>(
       vision: { type: String, default: "" },
       valores: { type: [String], default: [] },
     },
+    bodegasDisplay: { type: [BodegaDisplaySchema], default: [] },
   },
   { _id: false }
 );

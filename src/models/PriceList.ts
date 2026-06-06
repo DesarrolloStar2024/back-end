@@ -2,6 +2,7 @@ import mongoose, { Schema, Document } from "mongoose";
 
 export interface ITier {
   priceField: string; // nombre en product.Precios: "PVP", "UNIDAD", "DISTRIBUIDOR"…
+  label?: string; // etiqueta visual de la escala (ej. "6", "caja x6"); vacío = "{cant} {Unidad}"
 }
 
 export interface IPriceList extends Document {
@@ -20,6 +21,7 @@ export interface IPriceList extends Document {
 const TierSchema = new Schema<ITier>(
   {
     priceField: { type: String, required: true },
+    label: { type: String, default: "" },
   },
   { _id: false }
 );

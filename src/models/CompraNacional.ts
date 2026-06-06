@@ -23,6 +23,9 @@ export interface CompraNacional extends Document {
   cantidad: number;
   precioUnd: number;
   precioTotal: number;
+  unidad?: string;
+  stock?: string;
+  precios?: { nombre: string; precio: string; cant: string }[];
   channelId?: string;
   createdBy?: { code?: string; name?: string };
   status: CompraEstado;
@@ -43,6 +46,12 @@ const CompraNacionalSchema = new Schema<CompraNacional>(
     cantidad: { type: Number, default: 0 },
     precioUnd: { type: Number, default: 0 },
     precioTotal: { type: Number, default: 0 },
+    unidad: { type: String, default: "" },
+    stock: { type: String, default: "" },
+    precios: {
+      type: [{ nombre: String, precio: String, cant: String, _id: false }],
+      default: [],
+    },
     channelId: { type: String, default: "" },
     createdBy: {
       code: { type: String, default: "" },

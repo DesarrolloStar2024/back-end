@@ -32,6 +32,26 @@ const extractArray = (data) => {
     return [];
 };
 // ====== NORMALIZADORES A TU MODELO ======
+/**
+ * Convierte el array Precios de la fuente (claves numeradas NombreN/PrecioN/CantN)
+ * a un array uniforme { nombre, precio, cant }.
+ */
+function normalizePreciosArray(raw) {
+    if (!Array.isArray(raw))
+        return [];
+    return raw
+        .map((entry) => {
+        const nk = Object.keys(entry).find((k) => k.startsWith("Nombre"));
+        const pk = Object.keys(entry).find((k) => k.startsWith("Precio"));
+        const ck = Object.keys(entry).find((k) => k.startsWith("Cant"));
+        return {
+            nombre: toStr(nk ? entry[nk] : ""),
+            precio: toNumStr(pk ? entry[pk] : ""),
+            cant: toNumStr(ck ? entry[ck] : ""),
+        };
+    })
+        .filter((e) => e.nombre);
+}
 function normalizeProduct(remote) {
     return {
         Codigo: toStr(remote.Codigo ?? remote.codigo),
@@ -72,6 +92,7 @@ function normalizeProduct(remote) {
         Precio6: toNumStr(remote.Precio6),
         Cant6: toNumStr(remote.Cant6),
         Foto: toStr(remote.Foto),
+        Precios: normalizePreciosArray(remote.Precios ?? []),
         // Si tu fuente ya trae Existencias en /articulos, respétalas
         Existencias: Array.isArray(remote.Existencias)
             ? normalizeExistencias(remote.Existencias)
@@ -87,6 +108,24 @@ function normalizeExistencias(remote) {
     }));
 }
 // ====== FETCHERS REMOTOS ======
+const TIMEOUT_SMALL = 60_000; // 1 min — búsquedas puntuales
+const TIMEOUT_LARGE = 900_000; // 15 min — descarga masiva (Sysplus es lento)
+async function fetchWithRetry(url, timeout, retries = 2) {
+    let lastErr;
+    for (let attempt = 1; attempt <= retries; attempt++) {
+        try {
+            const { data } = await axios.get(url, { timeout });
+            return data;
+        }
+        catch (err) {
+            lastErr = err;
+            if (attempt < retries) {
+                await new Promise((r) => setTimeout(r, 3000));
+            }
+        }
+    }
+    throw lastErr;
+}
 async function fetchArticulos(size, buscar) {
     const params = [];
     if (size != null)
@@ -94,12 +133,13 @@ async function fetchArticulos(size, buscar) {
     if (buscar)
         params.push(`buscar=${encodeURIComponent(buscar)}`);
     const url = `${SOURCE_BASE}/articulos${params.length ? "?" + params.join("&") : ""}`;
-    const { data } = await axios.get(url, { timeout: 60_000 });
+    const timeout = size && size > 5000 ? TIMEOUT_LARGE : TIMEOUT_SMALL;
+    const data = await fetchWithRetry(url, timeout);
     return extractArray(data);
 }
 async function fetchPrecios(buscar) {
     const url = `${SOURCE_BASE}/articulosSinc${buscar ? `?buscar=${encodeURIComponent(buscar)}` : ""}`;
-    const { data } = await axios.get(url, { timeout: 60_000 });
+    const data = await fetchWithRetry(url, TIMEOUT_SMALL);
     return extractArray(data);
 }
 async function fetchExistencias(buscar, fecha, unidad = true) {
@@ -111,7 +151,7 @@ async function fetchExistencias(buscar, fecha, unidad = true) {
     // `unidad` se pasa sin valor (flag)
     const query = params.join("&");
     const url = `${SOURCE_BASE}/existencias_listado${query ? "?" + query : ""}${unidad ? (query ? "&unidad" : "?unidad") : ""}`;
-    const { data } = await axios.get(url, { timeout: 60_000 });
+    const data = await fetchWithRetry(url, TIMEOUT_SMALL);
     const arr = extractArray(data);
     // Si vino como objeto único { Codigo, Existencias }, conviértelo a array uniforme
     if (!arr.length && data?.Codigo) {
@@ -167,6 +207,7 @@ async function writePrices(items, batchSize, onProgress) {
                 Cant5: toNumStr(r.Cant5),
                 Precio6: toNumStr(r.Precio6),
                 Cant6: toNumStr(r.Cant6),
+                Precios: normalizePreciosArray(r.Precios ?? []),
             };
             return {
                 updateOne: {

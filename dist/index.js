@@ -21,6 +21,8 @@ import { categoriasRoute } from "./routes/categorias.js";
 import { quotesRoute } from "./routes/quotes.js";
 import { couponsRoute } from "./routes/coupons.js";
 import { sitemapRoute } from "./routes/sitemap.js";
+import { pricelistsRoute } from "./routes/pricelists.js";
+import { comprasNacionalesRoute } from "./routes/comprasNacionales.js";
 // --- Route definitions (solo para OpenAPI spec, no manejan requests) ---
 import * as productsRoutes from "./routes/products-doc/products.routes.js";
 import * as superadminsRoutes from "./routes/superadmins-doc/superadmins.routes.js";
@@ -83,6 +85,8 @@ app.route("/categorias", categoriasRoute);
 app.route("/quotes", quotesRoute);
 app.route("/coupons", couponsRoute);
 app.route("/sitemap.xml", sitemapRoute);
+app.route("/pricelists", pricelistsRoute);
+app.route("/compras-nacionales", comprasNacionalesRoute);
 // --- Registrar route definitions en el spec OpenAPI ---
 // Estas rutas NO manejan requests (los handlers existentes de arriba lo hacen),
 // solo agregan la documentación al spec. Usamos un handler stub que nunca se ejecuta
@@ -206,20 +210,35 @@ async function bootstrap() {
     }
 }
 bootstrap();
-// --- Cron: sincronización de productos a las 6am (solo entorno no-Vercel) ---
+// --- Cron: sincronización full de productos (solo entorno no-Vercel) ---
+// Configurable por env. Default: 4 veces al día (5am, 11am, 5pm, 11pm Bogotá).
+// IMPORTANTE: el sync NO toca RefCatalogo ni PromoCatalogo (writeProducts usa
+// $set solo con los campos de la fuente), así que esos flags quedan intactos.
 if (!process.env.VERCEL) {
-    cron.schedule("0 6 * * *", async () => {
+    const FULL_SYNC_CRON = process.env.FULL_SYNC_CRON || "0 5,11,17,23 * * *";
+    let isSyncing = false;
+    cron.schedule(FULL_SYNC_CRON, async () => {
+        if (isSyncing) {
+            console.warn("[cron] Sync anterior aún en curso — se omite esta corrida.");
+            return;
+        }
+        isSyncing = true;
+        const startedAt = Date.now();
         console.log("[cron] Iniciando sincronización full de productos...");
         try {
             await connectDB();
             const { total, done } = await runFullSync({ size: 5000, batchSize: 800 });
-            console.log(`[cron] Sincronización completada: ${done}/${total} productos`);
+            const secs = Math.round((Date.now() - startedAt) / 1000);
+            console.log(`[cron] Sync completado: ${done}/${total} productos en ${secs}s`);
         }
         catch (err) {
             console.error("[cron] Error en sincronización:", err);
         }
+        finally {
+            isSyncing = false;
+        }
     }, { timezone: "America/Bogota" });
-    console.log("[cron] Job de sincronización programado a las 06:00 (Bogotá)");
+    console.log(`[cron] Sync full programado: "${FULL_SYNC_CRON}" (America/Bogota)`);
 }
 // --- Ejecución local ---
 if (!process.env.VERCEL) {
