@@ -123,6 +123,10 @@ async function fetchWithRetry(url: string, timeout: number, retries = 2): Promis
       return data;
     } catch (err: any) {
       lastErr = err;
+      // Adjuntamos el contexto de la llamada para mostrarlo en el reporte al usuario
+      lastErr._syncUrl = url;
+      lastErr._syncStatus = err.response?.status ?? (err.code === "ECONNABORTED" ? "TIMEOUT" : "SIN_RESPUESTA");
+      lastErr._syncResponse = err.response?.data ?? err.message ?? "Sin respuesta del servidor";
       if (attempt < retries) {
         await new Promise((r) => setTimeout(r, 3000));
       }
@@ -385,15 +389,24 @@ syncRoute.get("/full/stream", authMiddleware(true), (c) => {
       });
 
       // === 2) Descargamos datos de Sysplus ===
-      let all: any[] = [];
+      // Heartbeat cada 20 s para evitar que el proxy nginx corte la conexión
+      // durante la espera larga de Sysplus (proxy_read_timeout suele ser 60 s).
+      const keepalive = setInterval(async () => {
+        try { await stream.write(": keepalive\n\n"); } catch { clearInterval(keepalive); }
+      }, 20_000);
 
-      if (codes.length) {
-        for (const code of codes) {
-          const arr = await fetchArticulos(size, code);
-          all = all.concat(arr);
+      let all: any[] = [];
+      try {
+        if (codes.length) {
+          for (const code of codes) {
+            const arr = await fetchArticulos(size, code);
+            all = all.concat(arr);
+          }
+        } else {
+          all = await fetchArticulos(size);
         }
-      } else {
-        all = await fetchArticulos(size);
+      } finally {
+        clearInterval(keepalive);
       }
 
       // === 3) Validar respuesta de Sysplus ===
@@ -484,7 +497,15 @@ syncRoute.get("/full/stream", authMiddleware(true), (c) => {
         event: "status",
         data: JSON.stringify({
           phase: "error",
-          message: `Error en sincronización: ${err?.message || "desconocido"}`,
+          message: `Error al consultar Sysplus: ${err?.message || "desconocido"}`,
+          sysplusEndpoint: err._syncUrl ?? null,
+          sysplusStatus: err._syncStatus ?? null,
+          sysplusResponse: (() => {
+            const r = err._syncResponse;
+            if (!r) return null;
+            if (typeof r === "string") return r.slice(0, 1000);
+            try { return JSON.stringify(r).slice(0, 1000); } catch { return String(r).slice(0, 1000); }
+          })(),
         }),
       });
     }
